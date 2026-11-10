@@ -154,6 +154,8 @@ It waits for stable file size/modification time, not an OBS stop event. Long rec
 
 ## Testing and release gate
 
+The current implementation has passed 60 tests locally and on a native Windows CI runner, plus real processing of the supplied completed replay. See [implementation and validation evidence](IMPLEMENTATION_REPORT.md) for exact versions, run links, draft locations and limits.
+
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
 .\.venv\Scripts\python.exe -m pytest -q -rs
