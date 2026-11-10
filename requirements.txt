@@ -1,0 +1,6 @@
+numpy>=1.26,<3
+yt-dlp[default]>=2025.11.12
+faster-whisper>=1.1,<3
+# Optional Fortnite HUD OCR:
+# opencv-python-headless>=4.9,<5
+# pytesseract>=0.3.10,<1

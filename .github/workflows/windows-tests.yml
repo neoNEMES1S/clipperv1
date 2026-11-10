@@ -1,0 +1,55 @@
+name: Windows release checks
+
+on:
+  workflow_dispatch:
+  push:
+    paths-ignore: ['**.md']
+  pull_request:
+    paths-ignore: ['**.md']
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Install FFmpeg and Python dependencies
+        shell: pwsh
+        run: |
+          choco install ffmpeg --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m pip install -r requirements-dev.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ffmpeg -version
+          ffprobe -version
+          node --version
+      - name: Download public test model and upstream speech fixture
+        shell: pwsh
+        run: |
+          $model = Join-Path $env:RUNNER_TEMP 'whisper-base'
+          $speech = Join-Path $env:RUNNER_TEMP 'jfk.flac'
+          python -c "from faster_whisper.utils import download_model; download_model('base', output_dir=r'$model')"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Invoke-WebRequest 'https://raw.githubusercontent.com/openai/whisper/main/tests/jfk.flac' -OutFile $speech
+          "CLIPPER_WHISPER_MODEL=$model" >> $env:GITHUB_ENV
+          "CLIPPER_SPEECH_SAMPLE=$speech" >> $env:GITHUB_ENV
+      - name: Verify imports, CLI, real Whisper and synthetic rendering
+        shell: pwsh
+        run: |
+          python -m pip check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python clipper.py --help
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m pytest -q -rs --junitxml=windows-tests.xml
