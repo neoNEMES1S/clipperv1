@@ -1,3 +1,13 @@
+# Local dashboard follow-up — 2026-11-12
+
+The user approved the Superdesign v2 draft. The functional interface is implemented in `app.py` and `web/` using only the Python standard library and local HTML/CSS/JS. Mac and Windows launchers open the loopback dashboard at `http://127.0.0.1:8765`. It accepts a completed replay URL and a 1–100 clip ceiling (default 25), runs the existing combat pipeline with small Whisper and 28/8-second windows, reports actual subprocess progress, and shows previous runs with native video playback and MP4 downloads. Older audio-only drafts are clearly labelled. One process tree runs at a time; Ctrl+C stops it while retaining completed files/downloads. No frontend dependencies, CDNs, accounts or external inference were added.
+
+Local verification: **103 tests and 22 subtests passed**, with no skips, including live HTTP tests for input validation, job exclusion, token/origin/host protection, output-path restrictions, download responses, video byte ranges, worker success/failure and shutdown. JavaScript and Mac launcher syntax checks passed. Native Safari was used to submit the actual replay with a 3-clip limit: source, completed combat scan and all three validated MP4s were reused, and the page reported successful completion. Invalid URLs showed an inline error. Actual gameplay frames and 36-second playback were verified in Safari; Open output folder opened the correct Finder directory. The Mac launcher was opened through Finder and successfully started the server/browser with no missing dependencies. FFmpeg and FFprobe were retained in ignored `.local/bin/` for this Mac, rather than relying on temporary downloads. The Windows dashboard CI result is pending at this snapshot. Manual Windows browser and desktop-launcher interaction have not been checked.
+
+The interface is for local use. History persists through manifests; current-job progress resets when the server restarts. Closing a browser tab keeps the job running; closing the launcher stops the server. The other 19 candidates from this replay were not rendered as part of frontend validation.
+
+---
+
 # Combat-selection follow-up — 2026-11-12
 
 User review showed that the initial audio-only ranking selected conversation/looting instead of meaningful fights. Passing the original encoding/unit tests did not establish highlight relevance. Pipeline 1.4 adds an explicit `--combat-only` workflow.

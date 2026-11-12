@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Clipper — Local studio</title>
+  <link rel="stylesheet" href="/app.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <div class="workspace">
+    <header><h1>Clipper<span class="wordmark-dot" aria-hidden="true">.</span></h1><span class="local"><span aria-hidden="true">●</span> Local workspace</span></header>
+    <main>
+      <div id="connection" class="notice error" role="alert" hidden></div>
+      <div class="top-grid">
+        <section class="panel">
+          <div class="section-heading"><span class="eyebrow">FROM STREAM TO SHORTS</span><h2>Start with a replay</h2></div>
+          <form id="generate-form">
+            <div class="fields">
+              <div class="url-field"><label for="replay-url">YouTube replay URL</label><input id="replay-url" name="url" type="url" placeholder="https://youtube.com/live/…" required maxlength="2048" autocomplete="off" spellcheck="false" aria-describedby="url-help"><span class="help" id="url-help">Use a completed stream that is playable on YouTube.</span></div>
+              <div><label for="max-clips">Clip limit</label><input id="max-clips" name="max_clips" type="number" min="1" max="100" step="1" value="25" required aria-describedby="limit-help"><span class="help" id="limit-help">Up to 100</span></div>
+            </div>
+            <div class="form-bottom"><p class="help">Confirmed eliminations only.<br>Fewer clips may qualify than your limit.</p><button class="primary" id="generate" type="submit">Generate clips <span aria-hidden="true">↗</span></button></div>
+            <p id="form-error" class="error-text" role="alert" hidden></p>
+          </form>
+        </section>
+        <section class="panel progress-panel" aria-labelledby="progress-heading">
+          <div class="progress-title"><h2 id="progress-heading">Processing</h2><span id="job-badge" class="badge">Ready</span></div>
+          <p id="job-message" role="status">Ready for your next stream.</p>
+          <details id="progress-details"><summary>Recent progress</summary><pre id="progress-log" tabindex="0">Progress will appear here.</pre></details>
+          <p class="help keep-open">You can close this tab. Keep the Clipper launcher window open while it works.</p>
+        </section>
+      </div>
+      <section class="results" aria-labelledby="results-heading">
+        <div class="results-heading"><div><span class="eyebrow">YOUR WORKSPACE</span><h2 id="results-heading">Clips, ready to review</h2></div><button id="open-folder" type="button" disabled>Open output folder <span aria-hidden="true">↗</span></button></div>
+        <div class="run-bar"><div class="run-field"><label for="run-select">Replay / run</label><select id="run-select" disabled><option>No runs yet</option></select></div><div class="run-stat"><span class="label">Clips</span><strong id="clip-count">0</strong></div><div class="run-stat"><span class="label">Selection</span><span id="selection-mode">—</span></div></div>
+        <div id="run-notice" class="notice" hidden></div>
+        <p id="empty" class="empty">Your clips will appear here. Paste a replay above to get started.</p>
+        <div id="clips" class="clips"></div>
+      </section>
+      <footer>Review each draft before posting. Your footage and clips stay on this computer.</footer>
+    </main>
+  </div>
+  <template id="clip-template">
+    <article class="clip-card">
+      <div class="video-frame"><video controls preload="metadata" playsinline></video></div>
+      <div class="clip-info"><div class="clip-title"><h3></h3><span class="duration"></span></div><p class="interval"></p><p class="caption-note"></p><a class="download" download>Download MP4 <span aria-hidden="true">↓</span></a></div>
+    </article>
+  </template>
+</body>
+</html>

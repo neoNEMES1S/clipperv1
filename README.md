@@ -1,8 +1,22 @@
 # Fortnite Clipper
 
-Generate **0–3 review-required vertical Shorts** from a completed YouTube livestream replay, or a local OBS recording. Paste the replay URL into one command after setup. Everything runs locally except the replay download and first-use Whisper model download. Nothing uploads or publishes videos.
+Generate **review-required vertical Shorts** from a completed YouTube livestream replay, or a local OBS recording. Use the local dashboard or the CLI after setup. The dashboard defaults to up to 25 clips; the CLI defaults to 3. Everything runs locally except the replay download and first-use Whisper model download. Nothing uploads or publishes videos.
 
 This is an explainable candidate finder, not a kill detector or a guarantee of entertaining clips. Mixed gameplay audio can trigger false positives. It returns zero drafts when the signals are insufficient.
+
+## Local dashboard
+
+After the one-time Python/FFmpeg setup below, double-click **Start Clipper.command** on Mac or **Start Clipper.bat** on Windows. On this Mac, the existing environment, small model, and local FFmpeg tools are already prepared. The launcher opens **http://127.0.0.1:8765** in your browser.
+
+1. Paste a completed YouTube replay URL.
+2. Choose a clip limit (1–100, default 25), then click **Generate clips**. The limit is a ceiling; only qualifying, distinct combat moments are selected.
+3. Follow the real processing stages, then play/download clips or open their output folder. Use the run selector to revisit earlier results. Older audio-only runs are labelled separately.
+
+Keep the launcher/terminal window open while processing. Closing the browser tab does not stop a job; reopening the page reconnects to it. Press Ctrl+C in the launcher to stop the server and active processing. Completed clips and source downloads are retained. One job runs at a time; the dashboard uses combat-only selection, the small multilingual Whisper model, and 28 seconds before / 8 seconds after each event.
+
+The interface uses the Python standard library and local HTML/CSS/JS, with no Node build, frontend packages, remote fonts or CDNs. It binds only to loopback and serves completed clips from the output manifests. History survives restarts; live progress is held in memory, while detailed pipeline logs remain in the output folders. It is a local desktop utility, not a remotely hosted service.
+
+If double-click launching is unavailable, run `.venv/bin/python app.py` on Mac/Linux or `.\\.venv\\Scripts\\python.exe app.py` on Windows. If port 8765 is already occupied, close the previous launcher or run `app.py --port 8766`. `--no-browser` starts just the server. FFmpeg/FFprobe can be on PATH or placed in the ignored `.local/bin/` folder (use `.exe` on Windows). Mac Homebrew executable paths are also checked.
 
 ## Windows quick start
 
@@ -169,7 +183,7 @@ It waits for stable file size/modification time, not an OBS stop event. Long rec
 
 ## Testing and release gate
 
-The current implementation has passed 76 tests and 22 subtests locally and on a native Windows CI runner, with no skips, plus full processing of the supplied four-hour replay in combat mode. See [implementation and validation evidence](IMPLEMENTATION_REPORT.md) for exact versions, run links, draft locations and limits.
+The local dashboard and pipeline have passed 103 tests and 22 subtests locally, with no skips. The earlier combat-pipeline release passed 76 tests on native Windows CI; the dashboard's Windows result is recorded in the [implementation and validation evidence](IMPLEMENTATION_REPORT.md), along with run links, output locations and limits.
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
