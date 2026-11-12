@@ -30,7 +30,7 @@ jobs:
         run: |
           choco install ffmpeg --yes --no-progress
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python -m pip install -r requirements-dev.txt
+          python -m pip install -r requirements-dev.txt -r requirements-combat.txt
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           ffmpeg -version
           ffprobe -version

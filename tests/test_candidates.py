@@ -3,7 +3,7 @@ import wave
 import numpy as np
 import pytest
 
-from clipper import Event, energy_per_second, microphone_events, select_clips
+from clipper import Event, energy_per_second, kill_counter_events, microphone_events, select_clips
 
 
 def test_chunked_synthetic_audio(tmp_path):
@@ -60,3 +60,45 @@ def test_stronger_peaks_are_not_flattened_into_early_ties():
     strengths = [e.metadata()['normalized_score'] for e in events]
     assert strengths[0] < strengths[1] < strengths[2] < 1
     assert select_clips(events, 240, 1)[0].anchor == 200
+
+
+def test_counter_requires_stability_and_ignores_initial_counts_and_resets():
+    values = [3, 3, 4, 4, 4, 0, 0, 1, 1, 8, 8]
+    readings = [{'time':float(i * 2), 'count':n, 'confidence':.98} for i,n in enumerate(values)]
+    events = kill_counter_events(readings)
+    assert [(e.time,e.raw_score) for e in events] == [(4.,1.), (14.,1.)]
+    assert all('two agreeing reads' in e.evidence for e in events)
+
+
+def test_counter_ignores_transient_or_uncertain_ocr():
+    readings = [{'time':float(i * 2), 'count':n, 'confidence':confidence}
+                for i,(n,confidence) in enumerate([(0,.99),(0,.99),(2,.99),(0,.99),
+                                                   (0,.99),(1,.79),(1,.79),(None,0)])]
+    assert kill_counter_events(readings) == []
+
+
+def test_counter_after_a_hud_gap_establishes_new_baseline():
+    readings = [{'time':t,'count':n,'confidence':.99} for t,n in [(0,0),(2,0),(40,2),(42,2)]]
+    assert kill_counter_events(readings) == []
+
+
+def test_counter_preserves_quad_wipes():
+    readings = [{'time':float(i*2),'count':n,'confidence':.99} for i,n in enumerate([0,0,4,4])]
+    events = kill_counter_events(readings)
+    assert len(events)==1 and events[0].raw_score==4
+
+
+def test_combat_mode_never_anchors_on_talk_or_general_kill_feed():
+    talk = [Event(30, 100, 'mic_reaction'), Event(90, 5.5, 'elimination_ocr')]
+    assert select_clips(talk, 150, 3, combat_only=True) == []
+    kills = [Event(120, 4.5, 'kill_counter_change', 1., '0 -> 1, two reads')]
+    clips = select_clips(talk+kills, 150, 3, combat_only=True)
+    assert len(clips) == 1
+    assert clips[0].anchor == 120
+    assert 'kill_counter_change' in clips[0].signals
+
+
+def test_combat_mode_prefers_multi_kill_over_louder_talking():
+    events = [Event(40, 4.5, 'kill_counter_change', 1.), Event(40, 100, 'mic_reaction'),
+              Event(110, 4.5, 'kill_counter_change', 1.), Event(116, 4.5, 'kill_counter_change', 1.)]
+    assert select_clips(events, 160, 1, combat_only=True)[0].anchor >= 110

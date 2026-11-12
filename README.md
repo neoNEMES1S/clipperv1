@@ -11,7 +11,7 @@ Install Python 3.11+, FFmpeg (including FFprobe and the `subtitles`/libass filte
 ```powershell
 py -3.11 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --upgrade pip
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m pip install -r requirements-combat.txt
 ffmpeg -version
 ffprobe -version
 deno --version # Or: node --version (22+)
@@ -21,21 +21,35 @@ ffmpeg -filters | Select-String subtitles
 After ending your stream, wait until its replay plays normally on YouTube. Run:
 
 ```powershell
-.\.venv\Scripts\python.exe clipper.py --input "https://www.youtube.com/watch?v=YOUR_VIDEO_ID" --output ".\shorts" --max-shorts 3 --model base
+.\.venv\Scripts\python.exe clipper.py --input "https://www.youtube.com/watch?v=YOUR_VIDEO_ID" --output ".\shorts" --max-shorts 3 --model small --combat-only
 ```
 
 Replace `YOUR_VIDEO_ID` with the real 11-character ID. `https://youtube.com/live/VIDEO_ID` and `https://youtu.be/VIDEO_ID` also work. Use footage you own or are authorized to process. No separate OBS recording or isolated microphone track is required for URL mode.
 
-The program checks metadata, downloads/reuses a validated source, analyzes audio, selects candidates, transcribes selected clips, and renders drafts. Progress is printed as `validate → download → analyze → select → transcribe → render → done`. A first Whisper run downloads model weights; later runs use the local model cache. CPU rendering can take longer than the clip duration.
+With `--combat-only`, the program checks metadata, downloads/reuses a validated source, scans the personal HUD counter, confirms local elimination/knockdown notices, selects candidates, transcribes selected clips, and renders drafts. Conversation alone cannot anchor a combat clip. Without this flag, selection retains the original audio-energy heuristic. Progress is printed as `validate → download → analyze → select → transcribe → render → done`. A first Whisper run downloads model weights; later runs use the local model cache. CPU rendering can take longer than the clip duration.
 
 These commands use the virtual environment's Python directly, so PowerShell activation is unnecessary. On macOS/Linux, create the environment with `python3 -m venv .venv` and use `.venv/bin/python` instead.
+
+## Combat-first selection
+
+Use `--combat-only` for kill/fight highlights. Install `requirements-combat.txt`: it adds small bundled RapidOCR models that run locally on CPU, without a Tesseract binary or a remote inference API.
+
+```powershell
+.\.venv\Scripts\python.exe clipper.py --input "https://youtu.be/YOUR_VIDEO_ID" --output ".\shorts" --combat-only --model small --max-shorts 3 --pre-roll 28 --post-roll 8
+```
+
+This mode reads the skull/personal-eliminations counter every two seconds. It requires two agreeing reads, ignores initial counts, resets, implausible jumps and long HUD gaps, and then looks for an elimination/knockdown notification in the center HUD near that increase. The left-side kill feed is excluded. Multi-kill groups outrank louder conversation; audio is only secondary evidence. It returns zero clips if no events meet those conditions, and fails clearly if the required OCR cannot run instead of falling back to conversation.
+
+The counter crop is calibrated for the standard English HUD used in the tested 1280×720 replay. Custom HUD placement, visibility changes, brief notifications and unreadable digits can cause missed kills. This is a conservative heuristic, not a trained Fortnite event detector or a guarantee of the best moments. Review each output.
+
+Completed visual scans are cached in `_combat_scans/` using source identity and detector version. Changing model or window settings reuses the scan. An interrupted scan restarts, while its downloaded source is retained. Delete the corresponding scan JSON to force fresh OCR after changing a HUD layout.
 
 ## Analyze, tune, and render
 
 Analyze timestamps without loading Whisper or rendering MP4s. **URL mode still downloads the replay** for audio analysis:
 
 ```powershell
-.\.venv\Scripts\python.exe clipper.py --input "https://youtu.be/YOUR_VIDEO_ID" --output ".\shorts" --max-shorts 3 --dry-run
+.\.venv\Scripts\python.exe clipper.py --input "https://youtu.be/YOUR_VIDEO_ID" --output ".\shorts" --max-shorts 3 --combat-only --dry-run
 ```
 
 For English/Hindi code-switching, try multilingual `small` for potentially better accuracy at greater CPU/RAM cost. Accuracy is not guaranteed. Leave the model's language detection enabled; no external AI API is needed.
@@ -44,7 +58,7 @@ For English/Hindi code-switching, try multilingual `small` for potentially bette
 .\.venv\Scripts\python.exe clipper.py --input "https://youtu.be/YOUR_VIDEO_ID" --output ".\shorts" --model small
 ```
 
-Optional HUD OCR requires Tesseract installed on PATH and optional Python dependencies:
+The legacy `--ocr` broad HUD scan requires Tesseract installed on PATH and optional Python dependencies. It can read other players' kill-feed messages; use `--combat-only` for the confirmed-counter workflow above:
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install opencv-python-headless pytesseract
@@ -86,6 +100,7 @@ shorts/
   _youtube_downloads/
     VIDEO_ID.mkv                      # validated source cache
     _partial/VIDEO_ID/                 # resumable download/merge work
+  _combat_scans/                       # completed, source/version-checked visual scans
   VIDEO_ID_<source-and-config-hash>/
     short_01.mp4                      # only when a candidate rendered successfully
     manifest.json
@@ -175,7 +190,7 @@ $env:CLIPPER_SPEECH_SAMPLE = (Resolve-Path "models/jfk.flac").Path
 
 These integration checks require successful speech recognition with valid timestamps and an empty result for actual silence. `--model` also accepts a local CTranslate2 model directory for offline processing.
 
-The prepared `.github/workflows/windows-tests.yml` installs Python 3.11, Node 24, FFmpeg, runtime dependencies and the public test model/sample on a Windows runner, then runs the full suite. It does not download user recordings or publish videos. A successful run is still required to validate Windows execution; merely adding the workflow is not evidence of a pass.
+The `.github/workflows/windows-tests.yml` installs Python 3.11, Node 24, FFmpeg, runtime dependencies and the public test model/sample on a Windows runner, then runs the full suite. It does not download user recordings or publish videos. A successful run is still required to validate Windows execution; merely adding the workflow is not evidence of a pass.
 
 Before calling this ready for real streams, process a **user-owned, completed Fortnite replay** and manually review the generated drafts for HUD visibility, caption timing/Hindi font rendering, audible mixed audio and useful selection. Check actual files/times against the manifest, run the command again to confirm cache/clip reuse, and try an invalid/live link to verify the error. Automated synthetic tests do not establish real YouTube download compatibility, transcription accuracy, or highlight quality. Windows installation and real replay review must be checked on the target machine.
 

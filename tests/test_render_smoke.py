@@ -92,3 +92,28 @@ def test_failed_render_preserves_existing_output(source, tmp_path):
         render_short(source, target, ass, 100, 1, 0)
     assert target.read_bytes() == b'existing draft'
     assert not list(tmp_path.glob('*.partial.mp4'))
+
+
+def test_native_combat_scan_on_synthetic_video(tmp_path):
+    cv2 = pytest.importorskip('cv2')
+    pytest.importorskip('rapidocr_onnxruntime')
+    import numpy as np
+    from clipper import combat_events
+
+    for count in [1,2]:
+        frame = np.zeros((720,1280,3),dtype=np.uint8)
+        cv2.putText(frame,str(count),(int(1280*.798)+7,int(720*.024)+19),
+                    cv2.FONT_HERSHEY_SIMPLEX,.55,(255,255,255),1,cv2.LINE_AA)
+        if count == 2:
+            cv2.putText(frame,'ELIMINATED',(700,210),cv2.FONT_HERSHEY_SIMPLEX,.8,
+                        (255,255,255),2,cv2.LINE_AA)
+        cv2.imwrite(str(tmp_path/f'{count}.png'),frame)
+    video = tmp_path/'combat.mkv'
+    run(['ffmpeg','-v','error','-y','-loop','1','-t','4','-i',str(tmp_path/'1.png'),
+         '-loop','1','-t','8','-i',str(tmp_path/'2.png'),
+         '-filter_complex','[0:v][1:v]concat=n=2:v=1:a=0[out]',
+         '-map','[out]','-r','30','-c:v','libx264','-preset','ultrafast',
+         '-pix_fmt','yuv420p',str(video)])
+    events = combat_events(video,12.,cache_path=tmp_path/'scan.json')
+    assert len(events)==1 and events[0].raw_score==1
+    assert 'ELIMINATED' in events[0].evidence

@@ -24,9 +24,10 @@ from media import logger, probe, run, validate_media, validate_short
 
 VIDEO_SUFFIXES = {'.mkv', '.mp4', '.mov', '.ts', '.webm'}
 # Ranking weights: OCR is secondary; independent audio + HUD evidence earns a bonus.
-SIGNAL_WEIGHTS = {'mic_reaction': 1.0, 'victory_ocr': .9, 'elimination_ocr': .75}
+SIGNAL_WEIGHTS = {'mic_reaction': 1.0, 'victory_ocr': .9, 'elimination_ocr': .75,
+                  'kill_counter_change': 1.2}
 MULTISIGNAL_BONUS = .3
-PIPELINE_VERSION = '1.3'
+PIPELINE_VERSION = '1.4'
 
 
 @dataclass
@@ -154,8 +155,137 @@ def ocr_events(video: Path, duration: float, sample_seconds: int = 8) -> list[Ev
     return results
 
 
+def kill_counter_events(readings: list[dict[str, Any]]) -> list[Event]:
+    """Require two agreeing HUD reads; existing counts and match resets are not kills."""
+    events = []
+    stable = pending = None
+    first_time = 0.
+    last_seen = None
+    for reading in readings:
+        count = reading['count']
+        if count is None or not 0 <= count <= 99 or reading['confidence'] < .8:
+            pending = None
+            continue
+        if last_seen is None or reading['time'] - last_seen > 12:
+            stable = pending = None
+        last_seen = reading['time']
+        if count != pending:
+            pending, first_time = count, reading['time']
+            continue
+        if stable is not None and 0 < count - stable <= 4:
+            delta = count - stable
+            events.append(Event(first_time, 4 + .5 * delta, 'kill_counter_change', float(delta),
+                                f'Personal HUD count {stable} -> {count}; two agreeing reads; '
+                                f'OCR confidence={reading["confidence"]:.3f}'))
+        stable = count
+    return events
+
+
+def hud_counter_image(crop: np.ndarray) -> np.ndarray | None:
+    """Isolate white HUD digits from changing scenery before recognizing a short number."""
+    import cv2
+    mask = cv2.inRange(crop, np.array([180,180,180],dtype=np.uint8),
+                       np.array([255,255,255],dtype=np.uint8))
+    _, labels, stats, _ = cv2.connectedComponentsWithStats(mask)
+    digits = np.zeros_like(mask)
+    for label, (x,y,width,height,area) in enumerate(stats[1:],1):
+        if (x > 0 and y > 0 and x+width < mask.shape[1] and y+height < mask.shape[0]
+                and height >= 3 and width >= 2 and area >= 8):
+            digits[labels == label] = 255
+    points = cv2.findNonZero(digits)
+    if points is None:
+        return None
+    x,y,width,height = cv2.boundingRect(points)
+    digits = cv2.copyMakeBorder(digits[y:y+height,x:x+width],4,4,4,4,cv2.BORDER_CONSTANT,value=0)
+    return cv2.resize(digits,None,fx=4,fy=4)
+
+
+def combat_events(video: Path, duration: float, *, cache_path: Path,
+                  progress: Any = print) -> list[Event]:
+    """Read the personal elimination counter, outside the other players' kill feed."""
+    stat = video.stat()
+    identity = {'path': str(video.resolve()), 'size': stat.st_size, 'mtime_ns': stat.st_mtime_ns,
+                'duration': duration, 'detector_version': 2, 'sample_seconds': 2}
+    if cache_path.exists():
+        try:
+            cached = json.loads(cache_path.read_text(encoding='utf-8'))
+            if cached['source'] == identity:
+                events = [Event(**e) for e in cached['events']]
+                progress(f'combat: reusing {len(events)} cached visual events')
+                return events
+        except (OSError, KeyError, TypeError, ValueError):
+            logger.warning('Ignoring invalid combat scan cache: %s', cache_path)
+    try:
+        import cv2
+        from rapidocr_onnxruntime import RapidOCR
+    except ImportError as exc:
+        raise RuntimeError('Combat selection requires local OCR: pip install -r requirements-combat.txt') from exc
+    reader = RapidOCR(intra_op_num_threads=2, inter_op_num_threads=1)
+    cap = cv2.VideoCapture(str(video))
+    if not cap.isOpened():
+        raise RuntimeError(f'Cannot decode gameplay HUD: {video}')
+    readings = []
+    try:
+        for second in range(0, int(duration), 2):
+            cap.set(cv2.CAP_PROP_POS_MSEC, second * 1000)
+            ok, frame = cap.read()
+            if not ok:
+                raise RuntimeError(f'Combat scan could not read frame at {second}s; source retained for retry.')
+            height, width = frame.shape[:2]
+            # shortcut: standard Fortnite HUD position; calibrate this region for custom HUD layouts.
+            crop = frame[int(height * .024):int(height * .063),
+                         int(width * .798):int(width * .831)]
+            count, confidence = None, 0.
+            for image in (hud_counter_image(crop), cv2.resize(crop,None,fx=4,fy=4)):
+                if image is None:
+                    continue
+                result, _ = reader(image, use_det=False, use_cls=False)
+                digits = [(int(text.strip().strip('.,，。')),float(conf)) for text,conf in (result or [])
+                          if re.fullmatch(r'[0-9]{1,2}',text.strip().strip('.,，。'))]
+                if len(digits) == 1 and digits[0][1] > confidence:
+                    count, confidence = digits[0]
+                if confidence >= .8:
+                    break
+            readings.append({'time': float(second), 'count': count, 'confidence': confidence})
+            if second % 600 == 0:
+                progress(f'combat: scanned {second / 60:.0f}/{duration / 60:.0f} minutes of personal HUD')
+        potential = kill_counter_events(readings)
+        events = []
+        for event in potential:
+            for offset in (-4, -2, 0, 1):
+                when = max(0., event.time + offset)
+                cap.set(cv2.CAP_PROP_POS_MSEC, when * 1000)
+                ok, frame = cap.read()
+                if not ok:
+                    continue
+                height, width = frame.shape[:2]
+                confirmed = False
+                for top,bottom in ((.15,.45),(.68,.86)):
+                    crop = frame[int(height*top):int(height*bottom), int(width*.35):int(width*.85)]
+                    result, _ = reader(cv2.resize(crop,None,fx=2,fy=2), use_cls=False)
+                    text = ' '.join(s for _, s, conf in (result or []) if conf >= .65).upper()
+                    # Compression can blur the suffix; the counter change and cropped location are also required.
+                    if re.search(r'\bELIMIN[A-Z]{2,10}\b|\bKNOCKED\s*DOWN', text):
+                        event.evidence += f'; center HUD at {when:.1f}s: {text[:250]}'
+                        event.score += .5
+                        events.append(event)
+                        confirmed = True
+                        break
+                if confirmed:
+                    break
+        payload = {'source': identity, 'readings': readings, 'events': [asdict(e) for e in events]}
+        temporary = cache_path.with_suffix('.tmp')
+        temporary.write_text(json.dumps(payload, ensure_ascii=False, allow_nan=False), encoding='utf-8')
+        temporary.replace(cache_path)
+        progress(f'combat: {len(events)}/{len(potential)} HUD counter increases have a center elimination/knockdown notice')
+        return events
+    finally:
+        cap.release()
+
+
 def select_clips(events: list[Event], duration: float, maximum: int, *,
-                 pre_roll: float = 23, post_roll: float = 13, min_length: float = 8) -> list[Clip]:
+                 pre_roll: float = 23, post_roll: float = 13, min_length: float = 8,
+                 combat_only: bool = False) -> list[Clip]:
     if maximum <= 0 or duration <= 0:
         return []
     if pre_roll < 0 or post_roll < 0 or min_length <= 0 or pre_roll + post_roll < min_length:
@@ -164,6 +294,8 @@ def select_clips(events: list[Event], duration: float, maximum: int, *,
               and math.isfinite(e.score) and e.score > 0]
     candidates: list[Clip] = []
     for e in events:
+        if combat_only and e.source != 'kill_counter_change':
+            continue
         start, end = max(0.0, e.time - pre_roll), min(duration, e.time + post_roll)
         start, end = math.ceil(start * 1000) / 1000, math.floor(end * 1000) / 1000
         if end - start < min_length:
@@ -173,8 +305,12 @@ def select_clips(events: list[Event], duration: float, maximum: int, *,
             continue
         sources = sorted({s.source for s in nearby})
         strengths = [max(s.metadata()['normalized_score'] for s in nearby if s.source == source)
-                     * SIGNAL_WEIGHTS.get(source, 1.) for source in sources]
-        score = sum(strengths) + MULTISIGNAL_BONUS * max(0, len(sources) - 1)
+                     * SIGNAL_WEIGHTS.get(source, 1.)
+                     * (.15 if combat_only and source == 'mic_reaction' else 1.) for source in sources]
+        score = sum(strengths) + MULTISIGNAL_BONUS * max(0, len(sources) - 1) * (.15 if combat_only else 1.)
+        if combat_only:
+            kills = sum(s.raw_score or 1 for s in nearby if s.source == 'kill_counter_change')
+            score += .25 * min(3, max(0, kills - 1))
         candidates.append(Clip(round(start, 3), round(end, 3),
                                round(score, 6), sources, e.time))
     chosen: list[Clip] = []
@@ -254,7 +390,7 @@ def escape_ass(text: str) -> str:
 def hook_for(signals: list[str], transcript: str) -> str:
     if 'victory_ocr' in signals:
         return 'POSSIBLE VICTORY MOMENT'
-    if 'elimination_ocr' in signals:
+    if 'elimination_ocr' in signals or 'kill_counter_change' in signals:
         return 'POSSIBLE ELIMINATION MOMENT'
     return 'FORTNITE STREAM MOMENT'
 
@@ -354,7 +490,7 @@ def process(video: Path, output: Path, mic_track: int = 1, mix_track: int = 0,
             no_transcribe: bool = False, dry_run: bool = False,
             source_url: str | None = None, *, pre_roll: float = 23, post_roll: float = 13,
             min_clip_seconds: float = 8, peak_ratio: float = 1.4,
-            peak_spacing: float = 14) -> dict[str, Any]:
+            peak_spacing: float = 14, combat_only: bool = False) -> dict[str, Any]:
     validate_options(mic_track, mix_track, max_shorts, pre_roll, post_roll,
                      min_clip_seconds, peak_ratio, peak_spacing)
     video, output = video.resolve(), output.resolve()
@@ -367,6 +503,7 @@ def process(video: Path, output: Path, mic_track: int = 1, mix_track: int = 0,
     config = {'pipeline_version': PIPELINE_VERSION, 'max_shorts': max_shorts,
               'whisper_model': model_name, 'ocr_enabled': use_ocr,
               'no_transcribe': no_transcribe, 'dry_run': dry_run,
+              'combat_only': combat_only,
               'mic_track': mic_track, 'mix_track': mix_track,
               'pre_roll': pre_roll, 'post_roll': post_roll, 'min_clip_seconds': min_clip_seconds,
               'peak_ratio': peak_ratio, 'peak_spacing': peak_spacing,
@@ -422,6 +559,13 @@ def process(video: Path, output: Path, mic_track: int = 1, mix_track: int = 0,
             events = microphone_events(energy_per_second(mic_wav), peak_ratio=peak_ratio,
                                        min_spacing=peak_spacing)
             mic_wav.unlink()  # Free the full-length PCM file before rendering.
+            if combat_only:
+                progress('analyze: scanning personal elimination counter (combat-only)...')
+                scan_root = output / '_combat_scans'
+                scan_root.mkdir(exist_ok=True)
+                source_key = hashlib.sha256(f'{video}|{stat.st_size}|{stat.st_mtime_ns}'.encode()).hexdigest()[:12]
+                events += combat_events(video, duration, cache_path=scan_root / f'{source_key}.json',
+                                        progress=progress)
             if use_ocr:
                 progress('analyze: scanning optional HUD OCR...')
                 try:
@@ -432,7 +576,7 @@ def process(video: Path, output: Path, mic_track: int = 1, mix_track: int = 0,
                     progress(f'Warning: {warning}')
                     logger.exception('OCR failed')
             clips = select_clips(events, duration, max_shorts, pre_roll=pre_roll,
-                                 post_roll=post_roll, min_length=min_clip_seconds)
+                                 post_roll=post_roll, min_length=min_clip_seconds, combat_only=combat_only)
             report['events'] = [e.metadata() for e in events]
             report['candidates'] = [dict(asdict(c), start_seconds=c.start, end_seconds=c.end,
                                         evidence=[e.metadata() for e in events
@@ -533,6 +677,8 @@ def main() -> None:
     parser.add_argument('--max-shorts', type=int, default=3, help='Maximum draft count; may return fewer or zero (default: 3)')
     parser.add_argument('--model', default='base', help='Whisper model name (base/small) or local CTranslate2 model directory')
     parser.add_argument('--ocr', action='store_true', help='Enable optional Fortnite HUD OCR')
+    parser.add_argument('--combat-only', action='store_true',
+                        help='Require personal HUD elimination-counter evidence; needs requirements-combat.txt')
     parser.add_argument('--no-transcribe', action='store_true', help='Disable speech transcription/captions; retain headline (testing only)')
     parser.add_argument('--dry-run', action='store_true', help='Analyze candidates without Whisper/MP4s; URL inputs still download the replay')
     parser.add_argument('--delete-download', action='store_true', help='Delete cached source after a successful render job; ignored for --dry-run')
@@ -576,7 +722,7 @@ def main() -> None:
                 args.max_shorts, args.model, args.ocr, args.no_transcribe, args.dry_run,
                 source_url=source_url, pre_roll=args.pre_roll, post_roll=args.post_roll,
                 min_clip_seconds=args.min_clip_seconds, peak_ratio=args.peak_ratio,
-                peak_spacing=args.peak_spacing)
+                peak_spacing=args.peak_spacing, combat_only=args.combat_only)
         if source_url and args.delete_download and not args.dry_run:
             local_input.unlink()
             print(f'Deleted downloaded video: {local_input}')

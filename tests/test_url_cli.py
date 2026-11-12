@@ -87,6 +87,13 @@ class CommandLineTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, 130)
         unlink.assert_not_called()
 
+    @patch('clipper.process')
+    def test_combat_selection_flag_is_forwarded(self, process):
+        with patch.object(sys, 'argv', ['clipper.py','--input','local.mkv',
+                                       '--output',str(self.output),'--combat-only']):
+            clipper.main()
+        self.assertTrue(process.call_args.kwargs['combat_only'])
+
 
 if __name__ == '__main__':
     unittest.main()

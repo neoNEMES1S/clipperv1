@@ -150,3 +150,24 @@ def test_missing_whisper_has_native_runtime_diagnostic(job, monkeypatch):
     manifest = next(job[1].glob('*/manifest.json'))
     assert json.loads(manifest.read_text())['status'] == 'failed'
     assert job[0].exists()
+
+
+def test_combat_mode_requires_visual_events_and_records_them(job, monkeypatch):
+    monkeypatch.setattr(clipper, 'combat_events', Mock(return_value=[
+        clipper.Event(60,4.5,'kill_counter_change',1.,'Personal HUD 0 -> 1, stable')]))
+    report = run_job(job, combat_only=True, dry_run=True)
+    assert report['config']['combat_only'] is True
+    assert len(report['candidates']) == 1
+    assert report['candidates'][0]['anchor'] == 60
+    assert 'kill_counter_change' in report['candidates'][0]['signals']
+
+
+def test_combat_scan_failure_does_not_fall_back_to_talking(job, monkeypatch):
+    monkeypatch.setattr(clipper, 'combat_events', Mock(side_effect=RuntimeError('OCR missing')))
+    with pytest.raises(RuntimeError, match='OCR missing'):
+        run_job(job, combat_only=True)
+    manifest = next(job[1].glob('*/manifest.json'))
+    report = json.loads(manifest.read_text())
+    assert report['status'] == 'failed'
+    assert report['shorts'] == []
+    job[2].assert_not_called()
