@@ -183,7 +183,7 @@ It waits for stable file size/modification time, not an OBS stop event. Long rec
 
 ## Testing and release gate
 
-The local dashboard and pipeline have passed 103 tests and 22 subtests locally, with no skips. The earlier combat-pipeline release passed 76 tests on native Windows CI; the dashboard's Windows result is recorded in the [implementation and validation evidence](IMPLEMENTATION_REPORT.md), along with run links, output locations and limits.
+The local dashboard and pipeline have passed 103 tests and 22 subtests locally and on native Windows CI, with no skips. See the [implementation and validation evidence](IMPLEMENTATION_REPORT.md) for run links, output locations and limits. Desktop Safari and a 390-pixel responsive viewport were manually checked on this Mac; Windows desktop browser/launcher interaction remains unverified.
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
