@@ -1,6 +1,6 @@
 # Publishing pipeline — implementation scope
 
-Status: publishing flow approved; implementation in progress. Accounts still need to be connected locally before a live upload.
+Status: approved publishing flow implemented and pushed. Local and Windows checks passed (163 tests and 22 subtests, no skips). Accounts still need to be connected locally before a live upload.
 
 Other games are deferred. The existing Fortnite extraction, local review and headline editor remain available.
 
@@ -34,6 +34,14 @@ Restrict publishing to completed, manifest-listed MP4s. Validate media and metad
 Test account mismatches, OAuth state/PKCE, secret redaction, invalid paths, changed clips after review, resumable byte offsets, duplicate submissions, partial platform success, Instagram processing/errors, ambiguous publish replies, cleanup and restart recovery. Use mocked provider boundaries plus native media/HTTP checks. Live uploads still require the user's local account connection and a concrete reviewed clip.
 
 Scheduling, bulk automatic posting, analytics and other-game detectors are outside this change.
+
+## Validation and remaining live check
+
+Implemented in `publish_accounts.py`, `publishing.py`, `publish_uploads.py`, the loopback HTTP endpoints and the existing browser interface. Native Safari checked the composer, required audience choice, exact review text/accounts/version and a 390×844 account layout using isolated test connections; that test server refused all upload/account mutations. The real workspace still has no connected accounts or upload receipts. None of the 11 saved clips were modified or posted by these checks.
+
+Local: 163 tests and 22 subtests passed in 10.55 seconds, including real FFmpeg Instagram normalization with unchanged video packets/original file. Windows: the same counts passed in 27.36 seconds in [run 43211815872](https://github.com/neoNEMES1S/clipperv1/actions/runs/43211815872), source commit `776ab847df5ccb56c88d9d6fa53ad60fedd05b7e`. Both had no skips; dependency checks passed.
+
+Still pending: import/connect the user's actual credentials in the local UI, choose a specific clip and posting details, and perform the first reviewed upload. API protocol tests use fake provider responses and do not establish live account permissions, storage reachability, Keychain authorization or publication success. Windows browser/launcher interaction is also unverified. Frozen upload copies remain on disk for resuming; there is no automatic local garbage collection.
 
 ## Primary references
 

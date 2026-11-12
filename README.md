@@ -211,7 +211,7 @@ It waits for stable file size/modification time, not an OBS stop event. Long rec
 
 ## Testing and release gate
 
-The dashboard, pipeline and publishing protocol checks have passed 163 tests and 22 subtests locally, with no skips. See the [implementation and validation evidence](IMPLEMENTATION_REPORT.md) for Windows run links, output locations and limits. Desktop Safari and responsive layouts were manually checked on this Mac; Windows desktop browser/launcher interaction remains unverified. Provider protocol tests use fake credentials and HTTP responses; live publication requires connecting your accounts.
+The dashboard, pipeline and publishing protocol checks have passed 163 tests and 22 subtests locally and on Windows CI, with no skips. See the [implementation and validation evidence](IMPLEMENTATION_REPORT.md) for Windows run links, output locations and limits. Desktop Safari and responsive layouts were manually checked on this Mac; Windows desktop browser/launcher interaction remains unverified. Provider protocol tests use fake credentials and HTTP responses; live publication requires connecting your accounts.
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
