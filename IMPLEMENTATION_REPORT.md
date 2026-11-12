@@ -22,7 +22,7 @@ The first-ten-minute calibration was visually checked against a real tower fight
 
 All three are 36-second, review-required drafts. Complete video/audio decoding passed. Rendered frames were inspected for combat, visible HUD, layout and safe headline placement. Whisper rejected all three noisy mixed-audio transcripts under the quality gates, so speech captions are omitted and warnings are recorded. Original mixed gameplay audio is retained. These are evidence-backed candidates, not a guarantee of the most entertaining moments.
 
-The complete scan/transcription/render pass, after downloading, took **352.35 seconds** on this Mac. Reported maximum RSS was **1,506,721,792 bytes**. Repeating the same command reused the downloaded source, completed visual scan and all three MP4s; none of their modification times changed. **76 tests passed locally**, plus **22 subtests**, with no skips. `pip check` passed. Automated coverage now includes combat gating, false kill-feed exclusion, scan cache validation, fail-closed behavior, actual OCR glyph recognition and a synthetic-video-to-confirmed-event test. The updated Windows workflow installs combat dependencies; its new result is pending at this snapshot.
+The complete scan/transcription/render pass, after downloading, took **352.35 seconds** on this Mac. Reported maximum RSS was **1,506,721,792 bytes**. Repeating the same command reused the downloaded source, completed visual scan and all three MP4s; none of their modification times changed. **76 tests passed locally**, plus **22 subtests**, with no skips. `pip check` passed. Automated coverage now includes combat gating, false kill-feed exclusion, scan cache validation, fail-closed behavior, actual OCR glyph recognition and a synthetic-video-to-confirmed-event test. The updated [Windows run 43194355019](https://github.com/neoNEMES1S/clipperv1/actions/runs/43194355019) also passed **76 tests and 22 subtests**, with no skips, in **21.49 seconds**. Tested source commit: `f1faf7b35f5f03832e333a68d0cb592c469900ed`. It installed the combat dependencies and exercised native OCR through the synthetic-video scanner test. The Windows log is retained locally at `shorts/_validation/combat-windows-validation.log`.
 
 Reproduce:
 
@@ -36,7 +36,7 @@ This mode is conservative and can miss unreadable counters, the first kill befor
 
 ---
 
-# Implementation and release validation
+# Initial pipeline 1.3 implementation and release validation (historical)
 
 The core implementation, real-replay validation, local checks and native Windows CI are complete. The authorized repository is [private clipperv1](https://github.com/neoNEMES1S/clipperv1). [Windows CI run 42825513698](https://github.com/neoNEMES1S/clipperv1/actions/runs/42825513698) passed all 60 tests, plus 22 unittest subtests, with no skips. Nothing uploads or publishes videos.
 
