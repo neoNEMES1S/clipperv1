@@ -76,6 +76,7 @@ class Workspace:
                 continue
             clips.append({'name': name, 'start': start, 'end': end,
                           'title': str(clip.get('title', 'Draft clip')),
+                          'headline': clip.get('headline', str(clip.get('title', '')).removesuffix(' #Fortnite #Shorts')),
                           'captions': bool(clip.get('captions')),
                           'url': f'/media/{identity}/{name}'})
         source = data.get('source', {})
@@ -113,17 +114,30 @@ class Workspace:
         command = [sys.executable, '-u', str(ROOT / 'clipper.py'), '--input', canonical,
                    '--output', str(self.output), '--max-shorts', str(maximum), '--model', model,
                    '--combat-only', '--pre-roll', '28', '--post-roll', '8']
+        self.launch(command, url=canonical, maximum=maximum, kind='replay')
+
+    def start_headline(self, run: str, name: str, text: str) -> None:
+        from edit_clip import normalize_headline
+        text = normalize_headline(text)
+        report = self.read_run(run)
+        if not any(c['name'] == name for c in report['clips']):
+            raise FileNotFoundError('Choose a completed clip.')
+        command = [sys.executable, '-u', str(ROOT / 'edit_clip.py'), '--output', str(self.output),
+                   '--run', run, '--clip', name, '--headline=' + text]
+        self.launch(command, url=report['source_url'], maximum=len(report['clips']), kind='headline')
+
+    def launch(self, command: list[str], *, url: str, maximum: int, kind: str) -> None:
         with self.lock:
             if self.job['status'] == 'running':
-                raise RuntimeError('A replay is already processing. Wait for it to finish.')
+                raise RuntimeError('A job is already processing. Wait for it to finish.')
             options = ({'creationflags': subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == 'nt'
                        else {'start_new_session': True})
             self.process = subprocess.Popen(command, cwd=ROOT, env=self.env, stdout=subprocess.PIPE,
                                             stderr=subprocess.STDOUT, text=True, encoding='utf-8',
                                             errors='replace', bufsize=1, **options)
-            self.job = {'status': 'running', 'url': canonical, 'max_clips': maximum, 'result_run': None}
+            self.job = {'status': 'running', 'url': url, 'max_clips': maximum, 'result_run': None, 'kind': kind}
             self.lines.clear()
-            self.lines.append('Starting replay processing…')
+            self.lines.append('Starting headline render…' if kind == 'headline' else 'Starting replay processing…')
             threading.Thread(target=self.collect, args=(self.process,), daemon=True).start()
 
     def collect(self, process: subprocess.Popen) -> None:
@@ -176,6 +190,8 @@ def open_folder(directory: Path) -> None:
 
 
 class Handler(BaseHTTPRequestHandler):
+    protocol_version = 'HTTP/1.1'
+
     def log_message(self, *_args) -> None:
         pass
 
@@ -294,6 +310,9 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError('Expected an object.')
             if self.path == '/api/start':
                 self.workspace.start(data.get('url'), data.get('max_clips'))
+                self.json_response({'status': 'running'}, 202)
+            elif self.path == '/api/headline':
+                self.workspace.start_headline(data.get('run', ''), data.get('clip', ''), data.get('headline'))
                 self.json_response({'status': 'running'}, 202)
             elif self.path == '/api/open-folder':
                 open_folder(self.workspace.run_directory(data.get('run', '')))

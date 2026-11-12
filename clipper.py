@@ -594,6 +594,7 @@ def process(video: Path, output: Path, mic_track: int = 1, mix_track: int = 0,
                 name = f'short_{i:02}'
                 title = hook_for(clip.signals, '')
                 meta = {'id': name, 'filename': f'{name}.mp4', 'path': f'{name}.mp4',
+                        'headline': title,
                         'title': f'{title} #Fortnite #Shorts',
                         'description': 'Candidate moment from a Fortnite stream. Review before posting.\n#Fortnite #Shorts #Gaming',
                         'start_seconds': clip.start, 'end_seconds': clip.end, 'score': clip.score,
@@ -608,7 +609,7 @@ def process(video: Path, output: Path, mic_track: int = 1, mix_track: int = 0,
                     except (ValueError, RuntimeError):
                         pass
                     else:
-                        for key in ('title', 'description', 'transcript', 'captions'):
+                        for key in ('title', 'headline', 'description', 'transcript', 'captions'):
                             meta[key] = prior.get(key, meta[key])
                         meta['status'] = 'review_required'
                         report['warnings'].extend(w for w in previous.get('warnings', [])

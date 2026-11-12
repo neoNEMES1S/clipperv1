@@ -42,6 +42,21 @@ function renderRun() {
     card.querySelector('.duration').textContent = `${Math.round(clip.end - clip.start)} sec`;
     card.querySelector('.interval').textContent = `Source ${time(clip.start)} – ${time(clip.end)}`;
     card.querySelector('.caption-note').textContent = clip.captions ? 'Draft captions · review for accuracy' : 'Speech captions omitted · original audio retained';
+    const editor = card.querySelector('.headline-form');
+    const input = editor.querySelector('input');
+    input.value = clip.headline || '';
+    input.setAttribute('aria-label', `Top headline for clip ${index + 1}`);
+    editor.addEventListener('submit', async event => {
+      event.preventDefault();
+      if (busy || submitting || !token) return;
+      submitting = true;
+      const errorText = editor.querySelector('.headline-error');
+      errorText.hidden = true;
+      editor.querySelector('button').disabled = true;
+      try { await request('/api/headline', {run: run.id, clip: clip.name, headline: input.value}); }
+      catch (error) { errorText.textContent = error.message; errorText.hidden = false; }
+      finally { submitting = false; await refresh(); }
+    });
     const link = card.querySelector('a');
     link.href = `${clip.url}?download=1`;
     link.download = `${run.source_id}_${clip.name}`;
@@ -64,7 +79,7 @@ async function refresh() {
     $('progress-log').textContent = log.join('\n') || 'Progress will appear here.';
     const stage = [...log].reverse().find(line => /^(validate:|download:|analyze:|combat:|select:|transcribe:|render:)/.test(line));
     const result = runs.find(run => run.id === state.job.result_run);
-    const stageLabel = !stage ? 'Starting replay processing…'
+    const stageLabel = !stage ? (state.job.kind === 'headline' ? 'Updating the clip headline…' : 'Starting replay processing…')
       : stage.startsWith('validate:') ? 'Checking the replay…'
       : stage.startsWith('download:') ? 'Downloading or reusing the replay…'
       : /^(analyze:|combat:)/.test(stage) ? 'Finding confirmed elimination moments…'
@@ -72,7 +87,7 @@ async function refresh() {
       : stage.startsWith('transcribe:') ? 'Preparing speech captions…' : 'Rendering clips…';
     $('job-message').textContent = busy ? stageLabel
       : state.job.status === 'failed' ? 'Processing stopped. Expand recent progress for the error, then retry.'
-      : state.job.status === 'complete' ? `${result?.clips.length || 0} clips ready. ${result?.clips.length ? 'Review them below.' : 'No moments met the selection requirements.'}`
+      : state.job.status === 'complete' ? (state.job.kind === 'headline' ? 'Headline updated. Preview or download the refreshed clip.' : `${result?.clips.length || 0} clips ready. ${result?.clips.length ? 'Review them below.' : 'No moments met the selection requirements.'}`)
       : 'Ready for your next stream.';
     if (busy || state.job.status === 'failed') $('progress-details').open = true;
     if (state.job.result_run && state.job.result_run !== lastResult && !busy) {
@@ -94,6 +109,7 @@ async function refresh() {
     $('run-select').disabled = !runs.length;
     $('run-select').value = selected;
     renderRun();
+    document.querySelectorAll('.headline-button').forEach(button => { button.disabled = busy || submitting; });
   } catch (error) {
     $('generate').disabled = true;
     showError('connection', `Cannot reach Clipper. Keep the launcher window open or relaunch it. ${error.message}`);

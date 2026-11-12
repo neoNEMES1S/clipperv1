@@ -1,3 +1,13 @@
+# Headline editing follow-up — 2026-11-12
+
+Each clip now has a Top headline field and Save & re-render action. Empty text removes the headline. The server validates plain text, a 72-character/three-line layout limit, the known run/clip and the original replay. A subprocess reuses existing ASS rendering and audio/timestamp/caption metadata to encode only that clip. A staged, permanent `.original.mp4` backup preserves the first draft. Render validation/atomic promotion protect the current MP4 from encoder failure. Updated headline/title metadata and posting notes persist, and normal processing reruns retain the edit. Editing and replay processing share the single-job lock. Media responses use HTTP/1.1 with the existing byte-range support.
+
+**120 tests and 22 subtests passed locally**, with no skips. New checks cover malformed/overflowing titles, blank headlines, Unicode/ASS escaping, source loss, path restrictions, caption preservation, first-original backup retention, failure preservation, authenticated HTTP submission/job exclusion, and a real FFmpeg edit followed by a CLI cache rerun. Native Safari submitted a headline edit on an isolated copy of the real tower clip; the job completed, the manifest/field updated, and an extracted frame verified the new text. Backup and real original SHA-256 hashes matched; user clips were not changed. The main dashboard was restarted only after confirming no active job, and all saved runs/clips remain available. The Windows result for this change is pending.
+
+The headline editor does not edit speech captions or font styling. It needs the original replay to remain present. Font/emoji coverage continues to depend on installed fonts. Wuthering Waves is the selected next game; its replay URL is still needed for calibration, and no other-game support is claimed.
+
+---
+
 # Local dashboard follow-up — 2026-11-12
 
 The user approved the Superdesign v2 draft. The functional interface is implemented in `app.py` and `web/` using only the Python standard library and local HTML/CSS/JS. Mac and Windows launchers open the loopback dashboard at `http://127.0.0.1:8765`. It accepts a completed replay URL and a 1–100 clip ceiling (default 25), runs the existing combat pipeline with small Whisper and 28/8-second windows, reports actual subprocess progress, and shows previous runs with native video playback and MP4 downloads. Older audio-only drafts are clearly labelled. One process tree runs at a time; Ctrl+C stops it while retaining completed files/downloads. No frontend dependencies, CDNs, accounts or external inference were added.

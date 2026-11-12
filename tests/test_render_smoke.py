@@ -64,11 +64,18 @@ def test_cli_local_end_to_end_and_reuse(source, tmp_path):
     target = manifest.parent / short['path']
     assert short['end_seconds'] <= report['source']['duration_seconds']
     assert short['transcript'] == ''
+    from edit_clip import edit_headline
+    original = target.read_bytes()
+    edit_headline(output, manifest.parent.name, short['path'], 'A custom headline')
+    assert (manifest.parent / 'short_01.original.mp4').read_bytes() == original
+    assert target.read_bytes() != original
+    assert json.loads(manifest.read_text())['shorts'][0]['headline'] == 'A custom headline'
     before = target.stat().st_mtime_ns
     completed = subprocess.run(command, capture_output=True, text=True)
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert target.stat().st_mtime_ns == before
     assert 'reusing validated' in completed.stdout
+    assert json.loads(manifest.read_text())['shorts'][0]['headline'] == 'A custom headline'
 
 
 def test_real_probe_rejects_no_audio_and_corrupt_container(tmp_path):

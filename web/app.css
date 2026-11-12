@@ -7,3 +7,4 @@ button,.download{border:1px solid var(--border);background:transparent;color:var
 @media(max-width:900px){.top-grid{grid-template-columns:1fr}.clips{grid-template-columns:repeat(2,minmax(0,1fr))}.run-bar{gap:20px}.top-grid{margin-bottom:32px}}
 @media(max-width:600px){.workspace{padding:0 18px}header{padding:24px 0}main{padding-top:24px}.panel{padding:20px}.fields{grid-template-columns:minmax(0,1fr) 80px;gap:12px}.form-bottom{align-items:stretch;flex-direction:column}.results-heading{align-items:flex-start;flex-direction:column}.run-bar{flex-wrap:wrap}.run-field{flex-basis:100%;max-width:none}.clips{grid-template-columns:1fr}.video-frame{height:440px}.local{font-size:11px}}
 @media(prefers-reduced-motion:reduce){*{transition:none!important}}
+.headline-form{margin:16px 0}.headline-input{margin-top:8px}.headline-button{margin-top:12px;width:100%;font-size:12px}.headline-error{white-space:pre-line}

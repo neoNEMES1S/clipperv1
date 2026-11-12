@@ -129,6 +129,28 @@ def test_missing_setup_does_not_spawn(workspace):
     popen.assert_not_called()
 
 
+def test_headline_endpoint_and_worker_share_job_exclusion(server, workspace):
+    run = workspace.runs()[0]['id']
+    with patch('app.subprocess.Popen') as popen, patch.object(workspace, 'collect'):
+        with post(server, '/api/headline', {'run': run, 'clip': 'short_01.mp4',
+                                           'headline': '--literal'}, workspace.token) as response:
+            assert response.status == 202
+        command = popen.call_args.args[0]
+        assert '--headline=--literal' in command
+        assert 'edit_clip.py' == Path(command[2]).name
+        with pytest.raises(RuntimeError, match='already processing'):
+            workspace.start('https://youtu.be/Abc123_-xyz', 3)
+        assert popen.call_count == 1
+
+
+def test_headline_validation_does_not_spawn(server, workspace):
+    with patch('app.subprocess.Popen') as popen:
+        with post(server, '/api/headline', {'run': workspace.runs()[0]['id'],
+                                           'clip': 'short_01.mp4', 'headline': 'a' * 73}, workspace.token) as response:
+            assert response.status == 400
+        popen.assert_not_called()
+
+
 @pytest.mark.parametrize('requested,status,expected', [
     ('bytes=10-19', 206, bytes(range(10, 20))),
     ('bytes=250-', 206, bytes(range(250, 256))),
