@@ -1,6 +1,6 @@
 # Fortnite Clipper
 
-Generate **review-required vertical Shorts** from a completed YouTube livestream replay, or a local OBS recording. Use the local dashboard or the CLI after setup. The dashboard defaults to up to 25 clips; the CLI defaults to 3. Everything runs locally except the replay download and first-use Whisper model download. Nothing uploads or publishes videos.
+Generate **review-required vertical Shorts** from a completed YouTube livestream replay, or a local OBS recording. Use the local dashboard or the CLI after setup. The dashboard defaults to up to 25 clips; the CLI defaults to 3. Processing runs locally except replay/model downloads. The optional publishing panel uploads only a selected, reviewed clip after **Upload now**.
 
 This is an explainable candidate finder, not a kill detector or a guarantee of entertaining clips. Mixed gameplay audio can trigger false positives. It returns zero drafts when the signals are insufficient.
 
@@ -19,6 +19,32 @@ Keep the launcher/terminal window open while processing. Closing the browser tab
 The interface uses the Python standard library and local HTML/CSS/JS, with no Node build, frontend packages, remote fonts or CDNs. It binds only to loopback and serves completed clips from the output manifests. History survives restarts; live progress is held in memory, while detailed pipeline logs remain in the output folders. It is a local desktop utility, not a remotely hosted service.
 
 If double-click launching is unavailable, run `.venv/bin/python app.py` on Mac/Linux or `.\\.venv\\Scripts\\python.exe app.py` on Windows. If port 8765 is already occupied, close the previous launcher or run `app.py --port 8766`. `--no-browser` starts just the server. FFmpeg/FFprobe can be on PATH or placed in the ignored `.local/bin/` folder (use `.exe` on Windows). Mac Homebrew executable paths are also checked.
+
+## Publish to YouTube and Instagram
+
+Install the optional publishing dependencies once, then restart Clipper:
+
+```sh
+.venv/bin/python -m pip install -r requirements-publish.txt
+```
+
+On Windows use `.\.venv\Scripts\python.exe -m pip install -r requirements-publish.txt`. These dependencies include the combat pipeline. The browser interface still needs no frontend packages or build step.
+
+Open the **YouTube**, **Instagram**, and **Temporary storage** cards under **Publish your clips**. Enter credentials in this local page, never in chat or the remote design preview.
+
+- **YouTube:** enable YouTube Data API v3 in your Google Cloud project; use a **Desktop app** OAuth client JSON. Add your Google account as a test user if the consent screen is in testing. Import the JSON and choose **Connect YouTube**. The system browser uses a loopback callback with PKCE and requests upload/channel-read permissions. Sign in to **@neonemesis8055**; Clipper checks the selected channel ID against that handle and rejects another channel. See [Google’s desktop OAuth setup](https://developers.google.com/identity/protocols/oauth2/native-app).
+- **Instagram:** use the access token generated for **@tyler1butsane** through your Meta app’s **Instagram Login** setup, with `instagram_business_basic` and `instagram_business_content_publish`. The professional account must be eligible for your app’s permissions/testing mode. Paste the token into the password field. An optional app secret exchanges a short-lived token for a long-lived token; it is used for that request and not retained. Known long-lived tokens are refreshed when nearing expiry; tokens entered without an exchange have unknown expiry and may need manual reconnection. This first local version uses token entry rather than hosted Meta OAuth. See [Meta’s Instagram Login guide](https://developers.facebook.com/docs/instagram-platform/instagram-api-with-instagram-login/business-login/).
+- **Temporary storage:** enter your HTTPS S3-compatible endpoint without a bucket path, bucket, region (`auto` for R2), and access/secret keys. Use a private bucket and credentials with PutObject, GetObject and DeleteObject access to Clipper’s `clipper/` prefix. Temporary AWS session credentials are not supported. “Configured” means saved; connectivity is checked during upload. Clipper does not change bucket ACLs or policies. [Instagram Login publishing](https://developers.facebook.com/docs/instagram-platform/content-publishing/) requires Meta to fetch an HTTPS media URL; Clipper stages only the selected clip and creates a one-hour signed fetch URL.
+
+Credentials and YouTube resumable session URLs are saved through the native OS credential store (macOS Keychain / Windows Credential Manager). Plaintext fallback is refused. If the OS store asks for access, approve it locally. **Disconnect** removes the saved account token; it does not revoke permissions at Google/Meta. Google’s client configuration remains available locally for reconnection.
+
+Choose **Publish clip →** below a completed preview. Edit the posting title/description/caption, choose YouTube, Instagram, or both, and set visibility/audience. These fields do not change the burned-in top headline. YouTube defaults to **Private**; the audience choice has no default. **Review upload** shows the exact clip version, accounts and posting text. **Upload now** starts the transfer. Instagram publishes a Reel immediately, including to the feed; there is no draft or scheduling mode. YouTube may keep processing the video after transfer completes.
+
+Upload history records each platform separately and provides post links and **Review & resume**. An identical file is uploaded at most once per saved destination account. Resumes use frozen reviewed bytes and saved posting details, even after a later headline edit. A changed file is a new version and can create a new post. If YouTube’s resumable session expires or a provider cannot confirm publication, check the account before attempting a fresh upload; Clipper refuses to create a possible duplicate automatically. If an Instagram publish is confirmed without a post ID, history links to the account instead of inventing a Reel link.
+
+After publication Clipper deletes its own staged Instagram object. If deletion fails, history keeps the successful publication and offers **Retry cleanup**, which does not publish again. Interrupted/failed uploads can leave a staged object until resumed; use a bucket lifecycle rule if you also want provider-side expiry. The signed URL expiring does **not** delete the object. Existing unrelated bucket objects are never deleted.
+
+Public connection metadata and upload receipts are stored in ignored `.local/publishing.sqlite3`. Frozen reviewed clips and Instagram upload copies remain in `.local/publish_media/` for retries; budget disk space for those copies. There is no automatic local cleanup yet. Keep this state if you want duplicate protection/history. No uploads start automatically after rendering, connection, or app restart. The full source replay is never sent by the publishing flow.
 
 ## Windows quick start
 
@@ -185,11 +211,11 @@ It waits for stable file size/modification time, not an OBS stop event. Long rec
 
 ## Testing and release gate
 
-The local dashboard and pipeline have passed 120 tests and 22 subtests locally and on native Windows CI, with no skips. See the [implementation and validation evidence](IMPLEMENTATION_REPORT.md) for run links, output locations and limits. Desktop Safari and a 390-pixel responsive viewport were manually checked on this Mac; Windows desktop browser/launcher interaction remains unverified.
+The dashboard, pipeline and publishing protocol checks have passed 163 tests and 22 subtests locally, with no skips. See the [implementation and validation evidence](IMPLEMENTATION_REPORT.md) for Windows run links, output locations and limits. Desktop Safari and responsive layouts were manually checked on this Mac; Windows desktop browser/launcher interaction remains unverified. Provider protocol tests use fake credentials and HTTP responses; live publication requires connecting your accounts.
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
-.\.venv\Scripts\python.exe -m pip install -r requirements-combat.txt
+.\.venv\Scripts\python.exe -m pip install -r requirements-publish.txt
 .\.venv\Scripts\python.exe -m pytest -q -rs
 ```
 
@@ -211,4 +237,4 @@ The `.github/workflows/windows-tests.yml` installs Python 3.11, Node 24, FFmpeg,
 
 Before calling this ready for real streams, process a **user-owned, completed Fortnite replay** and manually review the generated drafts for HUD visibility, caption timing/Hindi font rendering, audible mixed audio and useful selection. Check actual files/times against the manifest, run the command again to confirm cache/clip reuse, and try an invalid/live link to verify the error. Automated synthetic tests do not establish real YouTube download compatibility, transcription accuracy, or highlight quality. Windows installation and real replay review must be checked on the target machine.
 
-A dashboard, gameplay model training, real-time capture, cloud deployment, and uploads are outside this release.
+Gameplay model training, real-time capture, cloud deployment, automatic/scheduled posting and other games are outside this release.

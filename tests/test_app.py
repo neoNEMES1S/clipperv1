@@ -227,3 +227,35 @@ def test_shutdown_stops_the_owned_processing_tree(workspace):
         else:
             killpg.assert_called_once_with(123456, app.signal.SIGTERM)
         process.wait.assert_called_once_with(timeout=5)
+
+
+def test_publishing_endpoints_require_token_and_review(server, workspace):
+    with patch('app.publishing_setup', return_value=''), patch.object(workspace.publisher, 'commit') as commit:
+        with post(server, '/api/publish/commit', {'review_id': 'not-reviewed'}, '') as response:
+            assert response.status == 403
+        commit.assert_not_called()
+        commit.side_effect = ValueError('This review expired.')
+        with post(server, '/api/publish/commit', {'review_id': 'not-reviewed'}, workspace.token) as response:
+            assert response.status == 400
+    workspace.job['status'] = 'running'
+    with post(server, '/api/publish/disconnect', {'platform': 'youtube'}, workspace.token) as response:
+        assert response.status == 409
+
+
+def test_publish_commit_launches_only_saved_reviewed_jobs(server, workspace):
+    with patch('app.publishing_setup', return_value=''), patch.object(workspace.publisher, 'commit',
+            return_value=(['a' * 32], workspace.runs()[0]['id'])), patch.object(workspace, 'launch') as launch:
+        with post(server, '/api/publish/commit', {'review_id': 'review-token'}, workspace.token) as response:
+            assert response.status == 200
+        command = launch.call_args.args[0]
+        assert Path(command[2]).name == 'publishing.py'
+        assert command[-2:] == ['--jobs', 'a' * 32]
+        assert launch.call_args.kwargs['kind'] == 'publish'
+
+
+def test_oauth_callback_strips_code_and_reports_connection_error(server, workspace):
+    with patch.object(workspace.publisher.accounts, 'google_finish', side_effect=ValueError('Connect again.')):
+        with fetch(server + '/oauth/youtube/callback?state=test&code=test-code') as response:
+            assert response.status == 200
+            assert 'code=' not in response.geturl()
+        assert workspace.publisher.snapshot()['connection_error'] == 'Connect again.'

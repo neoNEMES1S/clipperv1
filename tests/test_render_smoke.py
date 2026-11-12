@@ -101,6 +101,32 @@ def test_failed_render_preserves_existing_output(source, tmp_path):
     assert not list(tmp_path.glob('*.partial.mp4'))
 
 
+def test_instagram_copy_preserves_video_and_normalizes_audio(source, tmp_path):
+    from types import SimpleNamespace
+    from publish_uploads import instagram_asset
+    from publishing import file_hash
+    from media import validate_short
+    ass = tmp_path / 'overlay.ass'
+    make_ass(ass, 'Reviewed clip', 3, [])
+    original = tmp_path / 'short.mp4'
+    render_short(source, original, ass, 6, 3, 0)
+    digest = file_hash(original)
+    (tmp_path / 'publish_media').mkdir()
+    publisher = SimpleNamespace(store=SimpleNamespace(directory=tmp_path))
+    record = {'sha': digest, 'asset': str(original), 'duration': 3}
+    target = instagram_asset(publisher, record)
+    validate_short(target, 3)
+    audio = json.loads(run(['ffprobe', '-v', 'error', '-select_streams', 'a:0',
+                            '-show_entries', 'stream=sample_rate,channels,codec_name', '-of', 'json', str(target)]))['streams'][0]
+    assert audio == {'codec_name': 'aac', 'sample_rate': '48000', 'channels': 2}
+    def video_hash(path):
+        return run(['ffmpeg', '-v', 'error', '-i', str(path), '-map', '0:v:0', '-c:v', 'copy', '-f', 'hash', '-'])
+    assert video_hash(original) == video_hash(target)
+    assert file_hash(original) == digest
+    assert target.read_bytes().find(b'moov') < target.read_bytes().find(b'mdat')
+    assert instagram_asset(publisher, record) == target
+
+
 def test_native_combat_scan_on_synthetic_video(tmp_path):
     cv2 = pytest.importorskip('cv2')
     pytest.importorskip('rapidocr_onnxruntime')

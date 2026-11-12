@@ -38,7 +38,39 @@
         <p id="empty" class="empty">Your clips will appear here. Paste a replay above to get started.</p>
         <div id="clips" class="clips"></div>
       </section>
-      <footer>Review each draft before posting. Your footage and clips stay on this computer.</footer>
+      <section id="publishing" class="publishing" aria-labelledby="publishing-heading">
+        <div class="results-heading"><div><span class="eyebrow">FROM DRAFT TO POST</span><h2 id="publishing-heading">Publish your clips</h2></div><span class="badge">Review first · upload when ready</span></div>
+        <p class="help">Only the clip you select is uploaded. Account credentials are saved in your computer’s credential store.</p>
+        <div id="publish-error" class="notice error" role="alert" hidden></div>
+        <div class="account-grid">
+          <details class="panel"><summary><strong>YouTube</strong><span id="youtube-status">Not connected</span></summary><p class="help">@neonemesis8055</p>
+            <form id="youtube-connect" class="account-form"><label>Desktop OAuth client JSON<input id="google-config" type="file" accept=".json,application/json" required></label><p class="help">Choose your Google Cloud Desktop app credentials, then sign in to the target channel.</p><button type="submit">Connect YouTube ↗</button></form>
+            <button class="disconnect" data-platform="youtube" type="button" hidden>Disconnect YouTube</button>
+          </details>
+          <details class="panel"><summary><strong>Instagram</strong><span id="instagram-status">Not connected</span></summary><p class="help">@tyler1butsane · professional account</p>
+            <form id="instagram-connect" class="account-form"><label>Instagram Login access token<input name="access_token" type="password" autocomplete="off" required></label><label>App secret <span class="help">Optional: exchange a short-lived token for a long-lived token.</span><input name="app_secret" type="password" autocomplete="off"></label><p class="help">Token needs instagram_business_basic and instagram_business_content_publish permissions.</p><button type="submit">Connect Instagram</button></form>
+            <button class="disconnect" data-platform="instagram" type="button" hidden>Disconnect Instagram</button>
+          </details>
+          <details class="panel"><summary><strong>Temporary storage</strong><span id="storage-status">Not configured</span></summary><p class="help">For Instagram · your S3/R2 bucket</p>
+            <form id="storage-connect" class="account-form"><label>HTTPS S3 endpoint<input name="endpoint" type="url" placeholder="https://account.r2.cloudflarestorage.com" required></label><label>Bucket<input name="bucket" required></label><label>Region<input name="region" value="auto" required></label><label>Access key<input name="access_key" type="password" autocomplete="off" required></label><label>Secret key<input name="secret_key" type="password" autocomplete="off" required></label><p class="help">Use a private bucket. Clipper creates an expiring fetch link and removes its temporary video after publication. Bucket permissions stay as configured.</p><button type="submit">Save storage settings</button></form>
+            <button class="disconnect" data-platform="storage" type="button" hidden>Remove storage settings</button>
+          </details>
+        </div>
+        <div class="panel composer">
+          <div id="publish-empty" class="empty">Choose Publish on a clip above to prepare your post.</div>
+          <form id="publish-form" hidden>
+            <div class="composer-grid"><div><div class="video-frame"><video id="publish-preview" controls playsinline preload="metadata" aria-label="Selected clip for publishing"></video></div><p id="publish-selection" class="help"></p></div>
+              <div><h3>Prepare your post</h3><div class="destinations"><label><input id="post-youtube" type="checkbox" checked> YouTube</label><label><input id="post-instagram" type="checkbox"> Instagram</label></div>
+                <div id="youtube-fields"><label for="post-title">YouTube title</label><input id="post-title" maxlength="100"><label for="post-description">YouTube description</label><textarea id="post-description" rows="3" maxlength="5000"></textarea>
+                  <div class="post-options"><div><label for="post-privacy">Visibility</label><select id="post-privacy"><option value="private">Private</option><option value="unlisted">Unlisted</option><option value="public">Public</option></select></div><div><label for="post-audience">Made for kids?</label><select id="post-audience"><option value="">Choose audience…</option><option value="no">No, not made for kids</option><option value="yes">Yes, made for kids</option></select></div></div></div>
+                <div id="instagram-fields" hidden><label for="post-caption">Instagram caption</label><textarea id="post-caption" rows="4" maxlength="2200"></textarea><p class="help">Instagram publishes a Reel immediately, including to your feed.</p></div>
+                <button id="review-upload" class="primary" type="submit">Review upload →</button>
+              </div></div>
+          </form>
+        </div>
+        <div class="history-heading"><h3>Upload history</h3><span class="help">Saved attempts can be resumed after restarting Clipper.</span></div><div id="upload-history" aria-live="polite"><p class="help">No uploads yet.</p></div>
+      </section>
+      <footer>Clips stay local until you choose Upload now. Review footage and captions before publishing.</footer>
     </main>
   </div>
   <template id="clip-template">
@@ -46,8 +78,9 @@
       <div class="video-frame"><video controls preload="metadata" playsinline></video></div>
       <div class="clip-info"><div class="clip-title"><h3></h3><span class="duration"></span></div><p class="interval"></p><p class="caption-note"></p>
         <form class="headline-form"><label>Top headline<input class="headline-input" type="text" maxlength="72" autocomplete="off"></label><p class="help">Leave blank to remove. The original clip is backed up.</p><button class="headline-button" type="submit">Save &amp; re-render</button><p class="headline-error error-text" role="alert" hidden></p></form>
-        <a class="download" download>Download MP4 <span aria-hidden="true">↓</span></a></div>
+        <a class="download" download>Download MP4 <span aria-hidden="true">↓</span></a><button class="publish-clip" type="button">Publish clip →</button></div>
     </article>
   </template>
+  <dialog id="upload-review" aria-labelledby="review-heading"><div class="review-heading"><h2 id="review-heading">Review before uploading</h2><button id="close-review" type="button" aria-label="Close review">✕</button></div><p id="review-clip" class="help"></p><video id="review-preview" controls playsinline preload="metadata" aria-label="Reviewed upload version"></video><div id="review-details"></div><p id="review-error" class="error-text" role="alert" hidden></p><p class="help">This review expires in 10 minutes. Only this reviewed version will be uploaded.</p><button id="upload-now" class="primary" type="button">Upload now</button></dialog>
 </body>
 </html>

@@ -1,6 +1,6 @@
 # Clipper Local Studio
 
-A small local browser utility for a Fortnite streamer who wants combat Shorts without terminal commands. It wraps an existing Python pipeline on the same computer. No account, cloud upload, billing, navigation sidebar, analytics, or marketing content.
+A small local browser utility for a Fortnite streamer who wants combat Shorts without terminal commands. It wraps an existing Python pipeline on the same computer. The publishing extension connects only the user's chosen YouTube and Instagram accounts; extraction stays local. No billing, navigation sidebar, analytics, or marketing content.
 
 ## Workflow
 
@@ -22,4 +22,4 @@ Adapt the Neural Noir Interface Style library prompt to a compact utility. Keep 
 
 ## Implementation constraints
 
-Python standard-library localhost server with a static HTML/CSS/JS page, existing virtualenv and subprocess pipeline. No React, Node build, new runtime packages, remote assets or hosted frontend. Mac and Windows double-click launchers. Keep source URLs and media local. Existing CLI behavior and old results remain intact.
+Python standard-library localhost server with a static HTML/CSS/JS page, existing virtualenv and subprocess pipeline. No React, Node build, remote UI assets or hosted frontend. Mac and Windows double-click launchers. Existing CLI behavior and old results remain intact. Publishing may use official OAuth/storage SDKs and an OS credential store. Only a reviewed clip is transferred to selected platforms, with temporary signed storage for Instagram Login; no automatic publishing after extraction. See publishing-brief.md for the new flow.

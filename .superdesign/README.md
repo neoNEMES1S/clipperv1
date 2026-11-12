@@ -1,6 +1,6 @@
 # Local frontend design
 
-Status: version 2 approved by the user; implemented as the local dashboard.
+Status: version 2 approved and implemented as the local dashboard; version 4 publishing flow approved and implemented in the same page.
 
 - Project: `46bc1e05-1728-4505-aa56-d4b5a0dd2fce`
 - Draft: `77cd1889-d3c6-4adb-859e-bd668df154ab`

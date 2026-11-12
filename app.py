@@ -20,6 +20,8 @@ from urllib.parse import parse_qs, unquote, urlsplit
 import webbrowser
 
 from youtube_source import youtube_video_id
+from publishing import Publisher
+from publish_accounts import PublishError, publishing_setup
 
 ROOT = Path(__file__).resolve().parent
 ASSETS = ROOT / 'web'
@@ -38,7 +40,9 @@ class Workspace:
         self.output = output.resolve()
         self.output.mkdir(parents=True, exist_ok=True)
         self.token = secrets.token_urlsafe(32)
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
+        state = ROOT / '.local' if self.output == (ROOT / 'shorts').resolve() else self.output.parent / '.local'
+        self.publisher = Publisher(state, self.output)
         self.job = {'status': 'idle', 'url': '', 'max_clips': 25, 'result_run': None}
         self.lines: deque[str] = deque(maxlen=150)
         self.process: subprocess.Popen | None = None
@@ -76,6 +80,7 @@ class Workspace:
                 continue
             clips.append({'name': name, 'start': start, 'end': end,
                           'title': str(clip.get('title', 'Draft clip')),
+                          'description': str(clip.get('description', '')),
                           'headline': clip.get('headline', str(clip.get('title', '')).removesuffix(' #Fortnite #Shorts')),
                           'captions': bool(clip.get('captions')),
                           'url': f'/media/{identity}/{name}'})
@@ -99,7 +104,44 @@ class Workspace:
         with self.lock:
             job = dict(self.job, log=list(self.lines))
         return {'app': 'clipper-local', 'token': self.token, 'job': job,
-                'runs': self.runs(), 'missing': self.missing}
+                'runs': self.runs(), 'missing': self.missing, 'publishing': self.publisher.snapshot()}
+
+    def publishing_action(self, action: str, data: dict, callback: str) -> dict:
+        with self.lock:
+            if self.job['status'] == 'running':
+                raise RuntimeError('Wait for the current job to finish before changing publishing settings or uploading.')
+            if publishing_setup():
+                raise ValueError(publishing_setup())
+            accounts = self.publisher.accounts
+            if action == 'youtube-config':
+                accounts.configure_google(data.get('config'))
+            elif action == 'youtube-connect':
+                self.publisher.connection_error = ''
+                return {'url': accounts.google_begin(callback)}
+            elif action == 'instagram-connect':
+                accounts.instagram_connect(data.get('access_token'), data.get('app_secret', ''))
+            elif action == 'storage-connect':
+                accounts.storage_connect(data)
+            elif action == 'disconnect':
+                accounts.disconnect(data.get('platform'))
+            elif action == 'prepare':
+                run = self.read_run(data.get('run', ''))
+                clip = next((c for c in run['clips'] if c['name'] == data.get('clip')), None)
+                if not clip:
+                    raise ValueError('Choose a completed clip.')
+                return self.publisher.review(run['id'], clip, self.run_directory(run['id']) / clip['name'], data)
+            elif action == 'retry-review':
+                return self.publisher.review_retry(data.get('id'))
+            elif action == 'commit':
+                ids, run = self.publisher.commit(data.get('review_id'))
+                command = [sys.executable, '-u', str(ROOT / 'publishing.py'), '--state',
+                           str(self.publisher.store.directory), '--output', str(self.output), '--run', run,
+                           '--jobs', *ids]
+                self.launch(command, url='', maximum=0, kind='publish')
+                return {'status': 'running'}
+            else:
+                raise ValueError('Unknown publishing action.')
+            return {'status': 'saved'}
 
     def start(self, url: str, maximum: int) -> None:
         if not isinstance(url, str) or len(url) > 2048:
@@ -137,7 +179,8 @@ class Workspace:
                                             errors='replace', bufsize=1, **options)
             self.job = {'status': 'running', 'url': url, 'max_clips': maximum, 'result_run': None, 'kind': kind}
             self.lines.clear()
-            self.lines.append('Starting headline render…' if kind == 'headline' else 'Starting replay processing…')
+            self.lines.append('Starting reviewed upload…' if kind == 'publish' else
+                              'Starting headline render…' if kind == 'headline' else 'Starting replay processing…')
             threading.Thread(target=self.collect, args=(self.process,), daemon=True).start()
 
     def collect(self, process: subprocess.Popen) -> None:
@@ -236,6 +279,15 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == '/api/state':
                 self.json_response(self.workspace.snapshot())
+            elif path == '/oauth/youtube/callback':
+                values = parse_qs(target.query)
+                try:
+                    self.workspace.publisher.accounts.google_finish(values.get('state', [''])[0],
+                                                                     values.get('code', [''])[0])
+                    self.workspace.publisher.connection_error = ''
+                except (PublishError, ValueError) as exc:
+                    self.workspace.publisher.connection_error = str(exc)
+                self.response_headers(303, 'text/plain', 0, {'Location': '/#publishing'})
             elif path in ('/', '/app.css', '/app.js'):
                 name, kind = {'/': ('index.html', 'text/html; charset=utf-8'),
                               '/app.css': ('app.css', 'text/css; charset=utf-8'),
@@ -253,6 +305,8 @@ class Handler(BaseHTTPRequestHandler):
                     raise FileNotFoundError('Clip not found.')
                 file = self.workspace.run_directory(parts[2]) / parts[3]
                 self.media(file, parse_qs(target.query).get('download') == ['1'])
+            elif path.startswith('/publish-media/'):
+                self.media(self.workspace.publisher.asset_for(path.removeprefix('/publish-media/')), False)
             elif path == '/favicon.ico':
                 self.response_headers(204, 'image/x-icon', 0)
             else:
@@ -303,7 +357,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             length = int(self.headers.get('Content-Length', '0'))
-            if not 0 < length <= 4096 or self.headers.get_content_type() != 'application/json':
+            if not 0 < length <= 65536 or self.headers.get_content_type() != 'application/json':
                 raise ValueError('Expected a small JSON request.')
             data = json.loads(self.rfile.read(length))
             if not isinstance(data, dict):
@@ -317,6 +371,10 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path == '/api/open-folder':
                 open_folder(self.workspace.run_directory(data.get('run', '')))
                 self.json_response({'status': 'opened'})
+            elif self.path.startswith('/api/publish/'):
+                callback = f'http://127.0.0.1:{self.server.server_port}/oauth/youtube/callback'
+                result = self.workspace.publishing_action(self.path.removeprefix('/api/publish/'), data, callback)
+                self.json_response(result)
             else:
                 self.json_response({'error': 'Action not found.'}, 404)
         except (ValueError, TypeError) as exc:
@@ -334,6 +392,7 @@ def main() -> None:
     parser.add_argument('--port', type=int, default=8765)
     parser.add_argument('--no-browser', action='store_true')
     args = parser.parse_args()
+    os.environ['PATH'] = pipeline_environment()['PATH']
     workspace = Workspace(ROOT / 'shorts')
     try:
         server = ThreadingHTTPServer(('127.0.0.1', args.port), Handler)

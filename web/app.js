@@ -1,6 +1,7 @@
 'use strict';
 const $ = id => document.getElementById(id);
 let token = '', runs = [], selected = '', rendered = '', lastResult = '', busy = false, submitting = false;
+let publishClip = null, publishing = null, historyKey = '', reviewId = '';
 const time = value => {
   const seconds = Math.floor(value);
   return seconds >= 3600
@@ -60,6 +61,7 @@ function renderRun() {
     const link = card.querySelector('a');
     link.href = `${clip.url}?download=1`;
     link.download = `${run.source_id}_${clip.name}`;
+    card.querySelector('.publish-clip').addEventListener('click', () => selectPublishClip(run, clip));
     $('clips').append(card);
   }
 }
@@ -77,17 +79,18 @@ async function refresh() {
     $('job-badge').classList.toggle('active', busy);
     const log = state.job.log;
     $('progress-log').textContent = log.join('\n') || 'Progress will appear here.';
-    const stage = [...log].reverse().find(line => /^(validate:|download:|analyze:|combat:|select:|transcribe:|render:)/.test(line));
+    const stage = [...log].reverse().find(line => /^(validate:|download:|analyze:|combat:|select:|transcribe:|render:|upload:)/.test(line));
     const result = runs.find(run => run.id === state.job.result_run);
-    const stageLabel = !stage ? (state.job.kind === 'headline' ? 'Updating the clip headline…' : 'Starting replay processing…')
+    const stageLabel = state.job.kind === 'publish' ? (stage || 'Starting reviewed upload…')
+      : !stage ? (state.job.kind === 'headline' ? 'Updating the clip headline…' : 'Starting replay processing…')
       : stage.startsWith('validate:') ? 'Checking the replay…'
       : stage.startsWith('download:') ? 'Downloading or reusing the replay…'
       : /^(analyze:|combat:)/.test(stage) ? 'Finding confirmed elimination moments…'
       : stage.startsWith('select:') ? 'Choosing distinct clips…'
       : stage.startsWith('transcribe:') ? 'Preparing speech captions…' : 'Rendering clips…';
     $('job-message').textContent = busy ? stageLabel
-      : state.job.status === 'failed' ? 'Processing stopped. Expand recent progress for the error, then retry.'
-      : state.job.status === 'complete' ? (state.job.kind === 'headline' ? 'Headline updated. Preview or download the refreshed clip.' : `${result?.clips.length || 0} clips ready. ${result?.clips.length ? 'Review them below.' : 'No moments met the selection requirements.'}`)
+      : state.job.status === 'failed' ? (state.job.kind === 'publish' ? 'An upload needs attention. Check each destination in upload history.' : 'Processing stopped. Expand recent progress for the error, then retry.')
+      : state.job.status === 'complete' ? (state.job.kind === 'publish' ? 'Upload finished. Open the saved links in upload history.' : state.job.kind === 'headline' ? 'Headline updated. Preview or download the refreshed clip.' : `${result?.clips.length || 0} clips ready. ${result?.clips.length ? 'Review them below.' : 'No moments met the selection requirements.'}`)
       : 'Ready for your next stream.';
     if (busy || state.job.status === 'failed') $('progress-details').open = true;
     if (state.job.result_run && state.job.result_run !== lastResult && !busy) {
@@ -110,6 +113,8 @@ async function refresh() {
     $('run-select').value = selected;
     renderRun();
     document.querySelectorAll('.headline-button').forEach(button => { button.disabled = busy || submitting; });
+    publishing = state.publishing;
+    renderPublishing();
   } catch (error) {
     $('generate').disabled = true;
     showError('connection', `Cannot reach Clipper. Keep the launcher window open or relaunch it. ${error.message}`);
@@ -129,6 +134,142 @@ $('run-select').addEventListener('change', event => { selected = event.target.va
 $('open-folder').addEventListener('click', async () => {
   try { await request('/api/open-folder', {run: selected}); }
   catch (error) { showError('run-notice', error.message); }
+});
+function selectPublishClip(run, clip) {
+  publishClip = {run: run.id, name: clip.name, revision: run.revision};
+  $('publish-empty').hidden = true;
+  $('publish-form').hidden = false;
+  $('publish-preview').src = `${clip.url}?v=${run.revision}#t=0.1`;
+  $('publish-selection').textContent = `${clip.name} · ${run.source_id} · ${time(clip.start)}–${time(clip.end)}`;
+  $('post-title').value = clip.title || '';
+  $('post-description').value = clip.description || '';
+  $('post-caption').value = clip.description || clip.title || '';
+  $('post-audience').value = '';
+  showError('publish-error', '');
+  $('publishing').scrollIntoView({behavior: 'smooth'});
+  $('post-title').focus({preventScroll: true});
+}
+async function publishAction(action, data) {
+  if (busy || submitting || !token) throw new Error('Wait for the current job to finish.');
+  submitting = true;
+  renderPublishing();
+  try { return await request(`/api/publish/${action}`, data); }
+  finally { submitting = false; await refresh(); }
+}
+function renderPublishing() {
+  if (!publishing) return;
+  const connections = publishing.connections;
+  for (const platform of ['youtube', 'instagram', 'storage']) {
+    const account = connections[platform];
+    $(platform + '-status').textContent = account
+      ? platform === 'storage' ? `Configured · ${account.bucket}` : `Connected · @${account.handle}`
+      : platform === 'storage' ? 'Not configured' : 'Not connected';
+    const disconnect = document.querySelector(`.disconnect[data-platform="${platform}"]`);
+    disconnect.hidden = !account;
+  }
+  if (publishing.setup_error || publishing.connection_error) showError('publish-error', publishing.setup_error || publishing.connection_error);
+  const disabled = busy || submitting || !!publishing.setup_error;
+  document.querySelectorAll('.account-form button,.disconnect,.publish-clip,#review-upload,#upload-now,.resume-upload').forEach(button => { button.disabled = disabled; });
+  const key = JSON.stringify([publishing.history, disabled]);
+  if (key === historyKey) return;
+  historyKey = key;
+  $('upload-history').replaceChildren();
+  if (!publishing.history.length) {
+    const empty = document.createElement('p'); empty.className = 'help'; empty.textContent = 'No uploads yet.';
+    $('upload-history').append(empty);
+  }
+  for (const item of publishing.history) {
+    const row = document.createElement('div'); row.className = 'upload-row';
+    const details = document.createElement('div');
+    const title = document.createElement('h3'); title.textContent = `${item.target === 'youtube' ? 'YouTube' : 'Instagram'} · @${item.handle} · ${item.name}`;
+    const status = document.createElement('p'); status.className = 'help';
+    status.textContent = `${item.status} · ${item.progress}%${item.visibility ? ` · ${item.visibility}` : ''}${item.cleanup_pending ? ' · temporary storage copy remains' : ''}`;
+    details.append(title, status);
+    if (item.error) { const error = document.createElement('p'); error.className = 'error-text'; error.textContent = item.error; details.append(error); }
+    const actions = document.createElement('div'); actions.className = 'upload-actions';
+    if (item.url) { const link = document.createElement('a'); link.href = item.url; link.target = '_blank'; link.rel = 'noopener noreferrer'; link.textContent = item.account_link ? 'Open account ↗' : 'Open video ↗'; actions.append(link); }
+    if (!['uploaded', 'published'].includes(item.status) || item.cleanup_pending) {
+      const button = document.createElement('button'); button.className = 'resume-upload'; button.disabled = disabled;
+      button.textContent = ['uploaded', 'published'].includes(item.status) ? 'Retry cleanup' : 'Review & resume';
+      button.addEventListener('click', async () => {
+        try { openReview(await publishAction('retry-review', {id: item.id})); }
+        catch (error) { showError('publish-error', error.message); }
+      }); actions.append(button);
+    }
+    row.append(details, actions); $('upload-history').append(row);
+  }
+}
+function postingFields() {
+  $('youtube-fields').hidden = !$('post-youtube').checked;
+  $('instagram-fields').hidden = !$('post-instagram').checked;
+}
+for (const id of ['post-youtube', 'post-instagram']) $(id).addEventListener('change', postingFields);
+postingFields();
+$('youtube-connect').addEventListener('submit', async event => {
+  event.preventDefault(); showError('publish-error', '');
+  // Open synchronously so browser popup protection does not interrupt OAuth.
+  const popup = window.open('about:blank', '_blank');
+  try {
+    const file = $('google-config').files[0];
+    if (!file || file.size > 60000) throw new Error('Choose the Desktop OAuth JSON file (up to 60 KB).');
+    await publishAction('youtube-config', {config: JSON.parse(await file.text())});
+    const result = await publishAction('youtube-connect', {});
+    if (popup) { popup.opener = null; popup.location.href = result.url; }
+    else window.location.assign(result.url);
+  } catch (error) { if (popup) popup.close(); showError('publish-error', error.message); }
+  finally { $('google-config').value = ''; }
+});
+for (const platform of ['instagram', 'storage']) {
+  $(platform + '-connect').addEventListener('submit', async event => {
+    event.preventDefault(); showError('publish-error', '');
+    const form = event.currentTarget;
+    try { await publishAction(platform + '-connect', Object.fromEntries(new FormData(form))); }
+    catch (error) { showError('publish-error', error.message); }
+    finally { form.querySelectorAll('input[type=password]').forEach(input => { input.value = ''; }); }
+  });
+}
+document.querySelectorAll('.disconnect').forEach(button => button.addEventListener('click', async () => {
+  try { await publishAction('disconnect', {platform: button.dataset.platform}); }
+  catch (error) { showError('publish-error', error.message); }
+}));
+$('publish-form').addEventListener('submit', async event => {
+  event.preventDefault(); showError('publish-error', '');
+  if (!publishClip) return;
+  try {
+    if ($('post-youtube').checked && !$('post-audience').value) throw new Error('Choose whether the YouTube video is made for kids.');
+    const run = runs.find(item => item.id === publishClip.run);
+    if (!run || run.revision !== publishClip.revision) throw new Error('This clip was edited. Choose Publish on its refreshed preview before reviewing.');
+    openReview(await publishAction('prepare', {run: publishClip.run, clip: publishClip.name,
+      youtube: $('post-youtube').checked, instagram: $('post-instagram').checked,
+      title: $('post-title').value, description: $('post-description').value, caption: $('post-caption').value,
+      privacy: $('post-privacy').value, made_for_kids: $('post-audience').value === 'yes'}));
+  } catch (error) { showError('publish-error', error.message); }
+});
+function openReview(review) {
+  reviewId = review.review_id;
+  $('review-clip').textContent = `${review.name} · ${Math.round(review.duration)} sec · version ${review.sha}`;
+  $('review-preview').src = review.preview + '#t=0.1';
+  $('review-details').replaceChildren();
+  for (const target of review.destinations) {
+    const section = document.createElement('section');
+    const heading = document.createElement('h3'); heading.textContent = `${target.target === 'youtube' ? 'YouTube' : 'Instagram'} · @${target.handle}`;
+    const text = document.createElement('p');
+    text.textContent = target.target === 'youtube'
+      ? `${review.meta.title}\n\n${review.meta.description}\n\nVisibility: ${review.meta.privacy}\nMade for kids: ${review.meta.made_for_kids ? 'Yes' : 'No'}`
+      : `${review.meta.caption}\n\nPublishes a Reel to your feed immediately. The selected clip is staged in your bucket with an expiring fetch link, then removed after publication.`;
+    const state = document.createElement('p'); state.className = 'help'; state.textContent = `Saved state: ${target.status}${target.status === 'uploaded' || target.status === 'published' ? ' · already uploaded; only pending cleanup will run' : ''}`;
+    section.append(heading, text, state); $('review-details').append(section);
+  }
+  showError('review-error', '');
+  $('upload-now').textContent = review.retry ? 'Resume saved action' : 'Upload now';
+  $('upload-review').showModal();
+}
+$('close-review').addEventListener('click', () => $('upload-review').close());
+$('upload-review').addEventListener('close', () => { $('review-preview').pause(); reviewId = ''; });
+$('upload-now').addEventListener('click', async () => {
+  if (!reviewId) return;
+  try { await publishAction('commit', {review_id: reviewId}); $('upload-review').close(); }
+  catch (error) { showError('review-error', error.message); }
 });
 // Poll only after the previous request finishes; leave video elements intact while playing.
 async function poll() { await refresh(); setTimeout(poll, 2000); }

@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "targets": {
+    "publishing-panel": {
+      "targetKind": "new-ui",
+      "projectId": "46bc1e05-1728-4505-aa56-d4b5a0dd2fce",
+      "activeDraftId": "77cd1889-d3c6-4adb-859e-bd668df154ab",
+      "designSystemPath": ".superdesign/design-system.md",
+      "contextFiles": [
+        ".superdesign/design-system.md",
+        ".superdesign/publishing-brief.md",
+        "web/index.html",
+        "web/app.css"
+      ],
+      "fingerprints": {
+        ".superdesign/design-system.md": "e4abbb17b722ae734a254bee6251425e4199884c457ca27fb54b54f6196a0689",
+        ".superdesign/publishing-brief.md": "84cfe156aa99e8c5818e20469a2a201cb162d19aa8403775e8f54b28dcd4f47b",
+        "web/index.html": "880d6f3d483c3d463d9adcfb25d6eb018ceb656d5662c3658560628fa4924c93",
+        "web/app.css": "5f6101b18acaab26d1f09126474d911ee8d4c95a241ec07cc464cea18801e664"
+      },
+      "components": [],
+      "drafts": {
+        "77cd1889-d3c6-4adb-859e-bd668df154ab": {
+          "title": "Clipper Studio - Publishing Update",
+          "visualDirection": "Approved charcoal and warm gold publishing flow",
+          "currentVersion": 4
+        }
+      },
+      "updatedAt": "2026-11-12T11:44:47.980401+00:00"
+    }
+  }
+}

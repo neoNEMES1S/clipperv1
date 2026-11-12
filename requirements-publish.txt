@@ -1,0 +1,5 @@
+-r requirements-combat.txt
+google-auth-oauthlib>=1.2,<2
+requests>=2.32,<3
+boto3>=1.40,<2
+keyring>=25,<27
