@@ -57,12 +57,33 @@ def is_web_url(value: str) -> bool:
 
 def download_youtube_video(url: str, cache_dir: Path) -> Path:
     identity = youtube_video_id(url)
+    cache_dir = cache_dir.resolve()
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    def valid_files(root: Path) -> list[Path]:
+        found = []
+        for file in sorted(root.glob(identity + '.*')):
+            if file.stem != identity or file.suffix.lower() not in VIDEO_SUFFIXES:
+                continue
+            try:
+                validate_media(file)
+            except MissingToolError:
+                raise
+            except (ValueError, RuntimeError) as exc:
+                print(f'Ignoring invalid media {file}: {exc}')
+            else:
+                found.append(file)
+        return found
+
+    print('validate: checking saved replay...')
+    cached = valid_files(cache_dir)
+    if cached:
+        print(f'download: using validated saved replay {cached[0]}; skipping download')
+        return cached[0]
     try:
         from yt_dlp import YoutubeDL
     except ImportError as exc:
         raise RuntimeError('Install yt-dlp first: pip install -r requirements.txt') from exc
-    cache_dir = cache_dir.resolve()
-    cache_dir.mkdir(parents=True, exist_ok=True)
     canonical = f'https://www.youtube.com/watch?v={identity}'
     settings = {'quiet': True, 'noplaylist': True,
                 'js_runtimes': {'deno': {}, 'node': {}}}
@@ -81,26 +102,6 @@ def download_youtube_video(url: str, cache_dir: Path) -> Path:
         raise RuntimeError(f'Stream status is {status!r}. Retry after the stream ends and its replay is ready.')
     if info.get('availability') in {'private', 'premium_only', 'subscriber_only', 'needs_auth'}:
         raise RuntimeError('Replay is private or restricted; use a publicly playable replay or a local recording.')
-
-    def valid_files(root: Path) -> list[Path]:
-        found = []
-        for file in sorted(root.glob(identity + '.*')):
-            if file.stem != identity or file.suffix.lower() not in VIDEO_SUFFIXES:
-                continue
-            try:
-                validate_media(file)
-            except MissingToolError:
-                raise
-            except (ValueError, RuntimeError) as exc:
-                print(f'Ignoring invalid media {file}: {exc}')
-            else:
-                found.append(file)
-        return found
-
-    cached = valid_files(cache_dir)
-    if cached:
-        print(f'download: using validated cache {cached[0]}')
-        return cached[0]
     # Keep partial files on failure so yt-dlp can resume; promote only validated media.
     staging = cache_dir / '_partial' / identity
     staging.mkdir(parents=True, exist_ok=True)
@@ -126,3 +127,76 @@ def download_youtube_video(url: str, cache_dir: Path) -> Path:
     target = cache_dir / ready[0].name
     ready[0].replace(target)
     return target
+
+
+def replay_signals(url: str, *, live: bool = False) -> list[tuple[float, float, float, str]]:
+    """Return time windows and ranking weights from optional YouTube metadata."""
+    import math
+    from statistics import median
+    import time
+
+    from yt_dlp import YoutubeDL
+    from yt_dlp.utils import DownloadError
+
+    canonical = f'https://www.youtube.com/watch?v={youtube_video_id(url)}'
+    settings = {'quiet': True, 'no_warnings': True, 'noplaylist': True,
+                'skip_download': True, 'socket_timeout': 10, 'retries': 0,
+                'extractor_retries': 0, 'ignore_no_formats_error': True}
+    samples = []
+    windows = []
+    failures = 0
+    seen_live = False
+    while True:
+        try:
+            with YoutubeDL(settings) as downloader:
+                info = downloader.extract_info(canonical, download=False) or {}
+        except DownloadError:
+            if not live:
+                print('audience: replay data unavailable; using footage signals.', flush=True)
+                return []
+            failures += 1
+            if failures >= 5:
+                raise ValueError('Could not read the live stream after five attempts. Try monitoring again.') from None
+            print('live: Could not read YouTube metadata. Retrying in 60 seconds.', flush=True)
+            time.sleep(60)
+            continue
+        failures = 0
+        status = info.get('live_status')
+        if live and status in ('is_live', 'is_upcoming'):
+            seen_live |= status == 'is_live'
+            count = info.get('concurrent_view_count')
+            started = info.get('release_timestamp')
+            now = time.time()
+            if status == 'is_upcoming':
+                print('live: Waiting for the broadcast to start.', flush=True)
+            elif type(count) is int and count >= 0 and isinstance(started, (int, float)) and 0 < started <= now:
+                elapsed = now - started
+                samples = [(at, viewers) for at, viewers in samples if elapsed - 300 <= at < elapsed]
+                baseline = median([viewers for _, viewers in samples]) if len(samples) >= 3 else None
+                if baseline is not None and count - baseline >= max(5, baseline * .2):
+                    windows.append((max(0, elapsed - 90), elapsed + 30, .8, 'live_viewer_spike'))
+                    print(f'live: {count:,} viewers. Spike marked near {int(elapsed // 60)} min.', flush=True)
+                else:
+                    print(f'live: {count:,} viewers. Watching for spikes.', flush=True)
+                samples.append((elapsed, count))
+            else:
+                print('live: Broadcast is active. Viewer count or start time is unavailable.', flush=True)
+            time.sleep(60)
+            continue
+        if live and status == 'post_live':
+            print('live: Broadcast ended. Waiting for YouTube to finish preparing the replay.', flush=True)
+            time.sleep(60)
+            continue
+        if live and not seen_live and status != 'was_live':
+            raise ValueError('Enter a live or upcoming YouTube stream, or use Replay mode.')
+        break
+
+    for item in info.get('heatmap') or []:
+        if not isinstance(item, dict):
+            continue
+        start, end, score = (item.get(key) for key in ('start_time', 'end_time', 'value'))
+        if (all(type(value) in (int, float) and math.isfinite(value) for value in (start, end, score))
+                and 0 <= start < end and .5 <= score <= 1):
+            windows.append((start, end, score * .6, 'most_replayed'))
+    print(f'audience: {len(windows)} viewer-interest windows; ranking alongside footage signals.', flush=True)
+    return windows

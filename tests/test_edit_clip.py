@@ -82,6 +82,16 @@ def test_missing_source_is_rejected_before_render(draft):
     render.assert_not_called()
 
 
+def test_gta6_headline_edit_preserves_game_tag(draft):
+    directory, target, report = draft
+    report['config']['game'] = 'gta6'
+    (directory / 'manifest.json').write_text(json.dumps(report))
+    with patch('clipper.render_short'):
+        edit_headline(directory.parent, directory.name, target.name, 'A chase')
+    updated = json.loads((directory / 'manifest.json').read_text())
+    assert updated['shorts'][0]['title'] == 'A chase #GTA6 #Shorts'
+
+
 @pytest.mark.parametrize('run,name', [('../outside', 'short_01.mp4'),
                                       ('draft_run', '../source.mkv'), ('draft_run', 'short_02.mp4')])
 def test_edit_rejects_other_paths_and_unlisted_clips(draft, run, name):

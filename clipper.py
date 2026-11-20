@@ -1,4 +1,4 @@
-"""Local, post-stream Fortnite highlight clipper.
+"""Local, post-stream gaming highlight clipper.
 
 MVP signal quality: microphone excitement + optional OCR text; not gameplay understanding.
 Requires ffmpeg + ffprobe available on PATH. Safe-by-default: creates drafts only.
@@ -21,6 +21,7 @@ from typing import Any
 import numpy as np
 
 from media import logger, probe, run, validate_media, validate_short
+from clip_titles import TITLE_MODEL, title_for_clip
 
 VIDEO_SUFFIXES = {'.mkv', '.mp4', '.mov', '.ts', '.webm'}
 # Ranking weights: OCR is secondary; independent audio + HUD evidence earns a bonus.
@@ -285,7 +286,8 @@ def combat_events(video: Path, duration: float, *, cache_path: Path,
 
 def select_clips(events: list[Event], duration: float, maximum: int, *,
                  pre_roll: float = 23, post_roll: float = 13, min_length: float = 8,
-                 combat_only: bool = False) -> list[Clip]:
+                 combat_only: bool = False, excluded: tuple[tuple[float, float], ...] = (),
+                 audience_windows=()) -> list[Clip]:
     if maximum <= 0 or duration <= 0:
         return []
     if pre_roll < 0 or post_roll < 0 or min_length <= 0 or pre_roll + post_roll < min_length:
@@ -298,7 +300,7 @@ def select_clips(events: list[Event], duration: float, maximum: int, *,
             continue
         start, end = max(0.0, e.time - pre_roll), min(duration, e.time + post_roll)
         start, end = math.ceil(start * 1000) / 1000, math.floor(end * 1000) / 1000
-        if end - start < min_length:
+        if end - start < min_length or any(start < b and end > a for a, b in excluded):
             continue
         nearby = [s for s in events if start <= s.time <= end and abs(s.time - e.time) <= 10]
         if not nearby:
@@ -311,6 +313,9 @@ def select_clips(events: list[Event], duration: float, maximum: int, *,
         if combat_only:
             kills = sum(s.raw_score or 1 for s in nearby if s.source == 'kill_counter_change')
             score += .25 * min(3, max(0, kills - 1))
+        nearby_audience = [(weight, signal) for a, b, weight, signal in audience_windows if a <= e.time < b]
+        score += max((weight for weight, _ in nearby_audience), default=0)
+        sources = sorted(set(sources) | {signal for _, signal in nearby_audience})
         candidates.append(Clip(round(start, 3), round(end, 3),
                                round(score, 6), sources, e.time))
     chosen: list[Clip] = []
@@ -485,12 +490,41 @@ def save_report(destination: Path, report: dict[str, Any]) -> None:
     (destination / 'posting_notes.md').write_text('\n'.join(notes), encoding='utf-8')
 
 
+def used_replay_windows(output: Path, video_id: str) -> tuple[tuple[float, float], ...]:
+    windows = set()
+    for manifest in output.glob(f'{video_id}_*/manifest.json'):
+        if manifest.parent.is_symlink() or manifest.is_symlink():
+            continue
+        try:
+            report = json.loads(manifest.read_text(encoding='utf-8'))
+            if report.get('source', {}).get('video_id') != video_id:
+                continue
+            for clip in report.get('shorts', []):
+                if not isinstance(clip, dict) or clip.get('status') != 'review_required':
+                    continue
+                name = clip.get('path')
+                start, end = clip.get('start_seconds'), clip.get('end_seconds')
+                if (isinstance(name, str) and re.fullmatch(r'short_\d+\.mp4', name)
+                        and (manifest.parent / name).is_file()
+                        and type(start) in (int, float) and type(end) in (int, float)
+                        and math.isfinite(start) and math.isfinite(end) and 0 <= start < end):
+                    windows.add((start, end))
+        except (OSError, ValueError, TypeError, AttributeError):
+            continue
+    return tuple(sorted(windows))
+
+
 def process(video: Path, output: Path, mic_track: int = 1, mix_track: int = 0,
             max_shorts: int = 3, model_name: str = 'base', use_ocr: bool = False,
             no_transcribe: bool = False, dry_run: bool = False,
             source_url: str | None = None, *, pre_roll: float = 23, post_roll: float = 13,
             min_clip_seconds: float = 8, peak_ratio: float = 1.4,
-            peak_spacing: float = 14, combat_only: bool = False) -> dict[str, Any]:
+            peak_spacing: float = 14, combat_only: bool = False,
+            game: str = 'fortnite', auto_title: bool = False, new_moments: bool = False, audience_windows=()) -> dict[str, Any]:
+    if game not in ('fortnite', 'gta6'):
+        raise ValueError('Choose Fortnite or GTA 6.')
+    if game != 'fortnite' and (combat_only or use_ocr):
+        raise ValueError('HUD OCR and combat-only selection are supported only for Fortnite; GTA 6 uses audio peaks.')
     validate_options(mic_track, mix_track, max_shorts, pre_roll, post_roll,
                      min_clip_seconds, peak_ratio, peak_spacing)
     video, output = video.resolve(), output.resolve()
@@ -508,6 +542,18 @@ def process(video: Path, output: Path, mic_track: int = 1, mix_track: int = 0,
               'pre_roll': pre_roll, 'post_roll': post_roll, 'min_clip_seconds': min_clip_seconds,
               'peak_ratio': peak_ratio, 'peak_spacing': peak_spacing,
               'signal_weights': SIGNAL_WEIGHTS, 'multisignal_bonus': MULTISIGNAL_BONUS}
+    # Preserve existing Fortnite job identities and edited clips.
+    if game != 'fortnite':
+        config['game'] = game
+    if auto_title:
+        config['title_model'] = TITLE_MODEL
+    excluded = used_replay_windows(output, video_id) if new_moments and video_id else ()
+    if excluded:
+        config['excluded_windows'] = excluded
+    if audience_windows:
+        config['audience_windows'] = audience_windows
+    game_name = 'GTA 6' if game == 'gta6' else 'Fortnite'
+    game_tag = '#GTA6' if game == 'gta6' else '#Fortnite'
     stat = video.stat()
     identity = f'{video}|{stat.st_size}|{stat.st_mtime_ns}|{json.dumps(config, sort_keys=True)}'
     signature = hashlib.sha256(identity.encode()).hexdigest()[:12]
@@ -553,7 +599,7 @@ def process(video: Path, output: Path, mic_track: int = 1, mix_track: int = 0,
                              'For mixed audio use --mic-track 0; local OBS defaults to mic index 1.')
         with tempfile.TemporaryDirectory(prefix='fortnite_clipper_') as temp:
             work = Path(temp)
-            progress('analyze: scanning audio energy in one-second chunks...')
+            progress(f'analyze: scanning {game_name} audio energy in one-second chunks...')
             mic_wav = work / 'analysis.wav'
             extract_audio(video, mic_wav, mic_track)
             events = microphone_events(energy_per_second(mic_wav), peak_ratio=peak_ratio,
@@ -576,7 +622,8 @@ def process(video: Path, output: Path, mic_track: int = 1, mix_track: int = 0,
                     progress(f'Warning: {warning}')
                     logger.exception('OCR failed')
             clips = select_clips(events, duration, max_shorts, pre_roll=pre_roll,
-                                 post_roll=post_roll, min_length=min_clip_seconds, combat_only=combat_only)
+                                 post_roll=post_roll, min_length=min_clip_seconds, combat_only=combat_only, excluded=excluded,
+                                 audience_windows=audience_windows)
             report['events'] = [e.metadata() for e in events]
             report['candidates'] = [dict(asdict(c), start_seconds=c.start, end_seconds=c.end,
                                         evidence=[e.metadata() for e in events
@@ -584,7 +631,13 @@ def process(video: Path, output: Path, mic_track: int = 1, mix_track: int = 0,
                                     for c in clips]
             progress(f'select: {len(events)} events; {len(clips)} distinct candidate(s).')
             if not clips:
-                progress('No convincing candidates; no Shorts will be invented.')
+                message = ('No new qualifying moments outside previously clipped footage.' if excluded
+                           else 'No convincing candidates; no Shorts will be invented.')
+                if excluded:
+                    report['warnings'].append(message)
+                progress(message)
+                if combat_only:
+                    progress('No confirmed Fortnite eliminations. For GTA 6 footage, choose GTA 6 and generate again.')
             report['shorts'] = []
             save_report(destination, report)
             model = None
@@ -592,11 +645,11 @@ def process(video: Path, output: Path, mic_track: int = 1, mix_track: int = 0,
                 if dry_run:
                     break
                 name = f'short_{i:02}'
-                title = hook_for(clip.signals, '')
+                title = hook_for(clip.signals, '') if game == 'fortnite' else 'GTA 6 STREAM MOMENT'
                 meta = {'id': name, 'filename': f'{name}.mp4', 'path': f'{name}.mp4',
                         'headline': title,
-                        'title': f'{title} #Fortnite #Shorts',
-                        'description': 'Candidate moment from a Fortnite stream. Review before posting.\n#Fortnite #Shorts #Gaming',
+                        'title': f'{title} {game_tag} #Shorts',
+                        'description': f'Candidate moment from a {game_name} stream. Review before posting.\n{game_tag} #Shorts #Gaming',
                         'start_seconds': clip.start, 'end_seconds': clip.end, 'score': clip.score,
                         'signals': clip.signals, 'transcript': '', 'captions': [], 'status': 'created'}
                 report['shorts'].append(meta)
@@ -639,6 +692,19 @@ def process(video: Path, output: Path, mic_track: int = 1, mix_track: int = 0,
                     speech_wav.unlink()
                 else:
                     progress(f'transcribe: skipped for {name} (--no-transcribe).')
+                if auto_title:
+                    progress(f'title: {name}, reading clip frames with local {TITLE_MODEL}...')
+                    try:
+                        title = title_for_clip(video, clip.start, clip.end - clip.start,
+                                               meta['transcript'], game)
+                    except (OSError, ValueError, RuntimeError) as exc:
+                        warning = f'{name}: automatic title unavailable; kept generic headline. {exc}'
+                        report['warnings'].append(warning)
+                        progress(f'Warning: {warning}')
+                    else:
+                        meta['headline'] = title
+                        meta['title'] = f'{title} {game_tag} #Shorts'
+                        progress(f'title: {name}: {title}')
                 save_report(destination, report)
                 render_dir = work / name
                 render_dir.mkdir()
@@ -677,11 +743,18 @@ def main() -> None:
     parser.add_argument('--mix-track', type=int, default=0, help='Zero-based mixed audio stream index; OBS Track 1 = 0')
     parser.add_argument('--max-shorts', type=int, default=3, help='Maximum draft count; may return fewer or zero (default: 3)')
     parser.add_argument('--model', default='base', help='Whisper model name (base/small) or local CTranslate2 model directory')
+    parser.add_argument('--game', choices=('fortnite', 'gta6'), default='fortnite',
+                        help='Game label; GTA 6 uses audio-peak selection')
+    parser.add_argument('--auto-title', action='store_true',
+                        help=f'Draft titles from clip frames and transcript using local Ollama {TITLE_MODEL}')
     parser.add_argument('--ocr', action='store_true', help='Enable optional Fortnite HUD OCR')
     parser.add_argument('--combat-only', action='store_true',
                         help='Require personal HUD elimination-counter evidence; needs requirements-combat.txt')
     parser.add_argument('--no-transcribe', action='store_true', help='Disable speech transcription/captions; retain headline (testing only)')
     parser.add_argument('--dry-run', action='store_true', help='Analyze candidates without Whisper/MP4s; URL inputs still download the replay')
+    parser.add_argument('--audience-peaks', action='store_true', help='Rank replay highlights using Most Replayed data when available')
+    parser.add_argument('--live', action='store_true', help='Monitor viewer spikes and wait for the YouTube replay before generating')
+    parser.add_argument('--new-moments', action='store_true', help='Exclude footage in completed clips from the same YouTube replay')
     parser.add_argument('--delete-download', action='store_true', help='Delete cached source after a successful render job; ignored for --dry-run')
     parser.add_argument('--pre-roll', type=float, default=23, help='Seconds before each event (default: 23)')
     parser.add_argument('--post-roll', type=float, default=13, help='Seconds after each event (default: 13)')
@@ -689,13 +762,17 @@ def main() -> None:
     parser.add_argument('--peak-ratio', type=float, default=1.4, help='Minimum energy/floor ratio, greater than 1 (default: 1.4)')
     parser.add_argument('--peak-spacing', type=float, default=14, help='Minimum seconds between audio peaks (default: 14)')
     args = parser.parse_args()
-    from youtube_source import download_youtube_video, is_web_url, youtube_video_id
+    from youtube_source import download_youtube_video, is_web_url, replay_signals, youtube_video_id
     try:
         validate_options(0 if args.mic_track is None else args.mic_track, args.mix_track,
                          args.max_shorts, args.pre_roll, args.post_roll, args.min_clip_seconds,
                          args.peak_ratio, args.peak_spacing)
         if not args.model.strip():
             raise ValueError('--model must not be empty.')
+        if args.game != 'fortnite' and (args.combat_only or args.ocr):
+            raise ValueError('--combat-only and --ocr require --game fortnite; GTA 6 uses audio peaks.')
+        if args.live and not is_web_url(args.input):
+            raise ValueError('Live mode requires a YouTube stream URL.')
         if is_web_url(args.input):
             youtube_video_id(args.input)
     except ValueError as exc:
@@ -711,8 +788,16 @@ def main() -> None:
     logger.addHandler(handler)
     try:
         source_url = args.input if is_web_url(args.input) else None
+        audience_windows = []
         if source_url:
+            if args.live:
+                audience_windows = replay_signals(source_url, live=True)
             local_input = download_youtube_video(source_url, args.output / '_youtube_downloads')
+            if args.audience_peaks and not args.live:
+                try:
+                    audience_windows = replay_signals(source_url)
+                except ImportError:
+                    print('audience: replay data unavailable; using footage signals.', flush=True)
             mic_track = 0 if args.mic_track is None else args.mic_track
             if mic_track != 0:
                 print('Warning: YouTube replays use mixed audio; usually --mic-track 0.')
@@ -723,7 +808,8 @@ def main() -> None:
                 args.max_shorts, args.model, args.ocr, args.no_transcribe, args.dry_run,
                 source_url=source_url, pre_roll=args.pre_roll, post_roll=args.post_roll,
                 min_clip_seconds=args.min_clip_seconds, peak_ratio=args.peak_ratio,
-                peak_spacing=args.peak_spacing, combat_only=args.combat_only)
+                peak_spacing=args.peak_spacing, combat_only=args.combat_only, game=args.game,
+                auto_title=args.auto_title, new_moments=args.new_moments, audience_windows=audience_windows)
         if source_url and args.delete_download and not args.dry_run:
             local_input.unlink()
             print(f'Deleted downloaded video: {local_input}')

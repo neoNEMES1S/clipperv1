@@ -52,7 +52,9 @@ class CommandLineTests(unittest.TestCase):
 
     @patch('youtube_source.download_youtube_video')
     def test_invalid_settings_rejected_before_download(self, download):
-        for extra in [['--max-shorts', '-1'], ['--peak-ratio', 'nan'], ['--mic-track', '-1']]:
+        for extra in [['--max-shorts', '-1'], ['--peak-ratio', 'nan'], ['--mic-track', '-1'],
+                      ['--game', 'unknown'], ['--game', 'gta6', '--combat-only'],
+                      ['--game', 'gta6', '--ocr']]:
             with self.subTest(extra=extra):
                 with patch.object(sys, 'argv', ['clipper.py', '--input', 'https://youtu.be/Abc123_-xyz',
                                                '--output', str(self.output)] + extra):
@@ -93,6 +95,15 @@ class CommandLineTests(unittest.TestCase):
                                        '--output',str(self.output),'--combat-only']):
             clipper.main()
         self.assertTrue(process.call_args.kwargs['combat_only'])
+
+    @patch('clipper.process')
+    def test_gta6_game_is_forwarded(self, process):
+        with patch.object(sys, 'argv', ['clipper.py', '--input', 'local.mkv',
+                                       '--output', str(self.output), '--game', 'gta6', '--auto-title']):
+            clipper.main()
+        self.assertEqual(process.call_args.kwargs['game'], 'gta6')
+        self.assertFalse(process.call_args.kwargs['combat_only'])
+        self.assertTrue(process.call_args.kwargs['auto_title'])
 
 
 if __name__ == '__main__':

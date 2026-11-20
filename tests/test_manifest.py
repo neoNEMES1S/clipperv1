@@ -171,3 +171,75 @@ def test_combat_scan_failure_does_not_fall_back_to_talking(job, monkeypatch):
     assert report['status'] == 'failed'
     assert report['shorts'] == []
     job[2].assert_not_called()
+
+
+def test_gta6_uses_audio_and_game_specific_posting_text(job, monkeypatch):
+    combat = Mock(side_effect=AssertionError('Fortnite detector must not run for GTA 6'))
+    monkeypatch.setattr(clipper, 'combat_events', combat)
+    fortnite = run_job(job)
+    gta = run_job(job, game='gta6')
+    assert gta['output_directory'] != fortnite['output_directory']
+    assert gta['config']['game'] == 'gta6'
+    assert gta['config']['combat_only'] is False
+    assert len(gta['shorts']) == 2
+    for short in gta['shorts']:
+        assert short['signals'] == ['mic_reaction']
+        assert short['headline'] == 'GTA 6 STREAM MOMENT'
+        assert '#GTA6' in short['title']
+        assert 'GTA 6 stream' in short['description']
+        assert 'Fortnite' not in short['title'] + short['description']
+    combat.assert_not_called()
+
+
+@pytest.mark.parametrize('options', [{'combat_only': True}, {'use_ocr': True}, {'game': 'unknown'}])
+def test_invalid_game_settings_rejected_before_processing(job, options):
+    with pytest.raises(ValueError):
+        run_job(job, **({'game': 'gta6'} | options))
+    job[2].assert_not_called()
+
+
+def test_zero_combat_candidates_explain_game_selection(job, monkeypatch, capsys):
+    monkeypatch.setattr(clipper, 'combat_events', Mock(return_value=[]))
+    report = run_job(job, combat_only=True, dry_run=True)
+    assert report['candidates'] == []
+    assert 'For GTA 6 footage, choose GTA 6' in capsys.readouterr().out
+
+
+def test_automatic_title_uses_transcript_and_reaches_video_and_posting(job, monkeypatch):
+    title = 'Flying a plane in GTA 6'
+    vision = Mock(return_value=title)
+    monkeypatch.setattr(clipper, 'title_for_clip', vision)
+    monkeypatch.setattr(clipper, 'whisper_segments', Mock(return_value=[
+        {'start': 0, 'end': 1, 'text': 'Look at this plane!'}]))
+    overlay = Mock(wraps=clipper.make_ass)
+    monkeypatch.setattr(clipper, 'make_ass', overlay)
+    report = clipper.process(job[0], job[1], mic_track=0, max_shorts=1, game='gta6', auto_title=True)
+    short = report['shorts'][0]
+    assert short['headline'] == title
+    assert short['title'] == f'{title} #GTA6 #Shorts'
+    assert report['config']['title_model'] == clipper.TITLE_MODEL
+    assert vision.call_args.args[3:] == ('Look at this plane!', 'gta6')
+    assert overlay.call_args.args[1] == title
+    manifest = clipper.Path(report['output_directory']) / 'manifest.json'
+    short['headline'], short['title'] = 'My own title', 'My own title #GTA6 #Shorts'
+    manifest.write_text(json.dumps(report))
+    again = clipper.process(job[0], job[1], mic_track=0, max_shorts=1, game='gta6', auto_title=True)
+    assert again['shorts'][0]['headline'] == 'My own title'
+    assert vision.call_count == 1
+    assert job[2].call_count == 1
+
+
+def test_title_failure_keeps_generic_title_and_renders(job, monkeypatch):
+    monkeypatch.setattr(clipper, 'title_for_clip', Mock(side_effect=RuntimeError('Ollama unavailable')))
+    report = run_job(job, game='gta6', auto_title=True, max_shorts=1)
+    assert report['status'] == 'review_required'
+    assert report['shorts'][0]['headline'] == 'GTA 6 STREAM MOMENT'
+    assert any('automatic title unavailable' in warning for warning in report['warnings'])
+    assert job[2].call_count == 1
+
+
+def test_dry_run_never_calls_vision_model(job, monkeypatch):
+    vision = Mock()
+    monkeypatch.setattr(clipper, 'title_for_clip', vision)
+    run_job(job, game='gta6', auto_title=True, dry_run=True)
+    vision.assert_not_called()

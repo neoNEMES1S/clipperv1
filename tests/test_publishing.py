@@ -77,7 +77,7 @@ def test_changed_review_cannot_upload(publisher, change):
     elif change == 'storage':
         publisher.store.connection('storage', {'id': 'another'})
     else:
-        publisher.reviews[plan['review_id']]['created'] = time.time() - 601
+        publisher.reviews[plan['review_id']][0]['created'] = time.time() - 601
     with pytest.raises(ValueError):
         publisher.commit(plan['review_id'])
     assert publisher.store.history() == []
@@ -182,6 +182,37 @@ def test_instagram_checks_identity_and_never_exposes_token(publisher):
     assert 'test-token' not in json.dumps(publisher.snapshot())
 
 
+def test_unified_instagram_discovers_target_and_keeps_token_private(publisher):
+    profiles = {'data': [{'id': '9999', 'username': 'another'},
+                         {'id': '1234', 'username': accounts.INSTAGRAM_HANDLE}]}
+    with patch('publish_accounts.api_json', return_value=profiles) as api:
+        publisher.accounts.instagram_connect('unified-test-token', login_mode='unified')
+    assert api.call_args.args[2] == accounts.UNIFIED_GRAPH + '/me/assigned_instagram_accounts'
+    saved = publisher.vault.get('instagram')
+    assert saved['id'] == '1234'
+    assert accounts.instagram_graph(saved) == accounts.UNIFIED_GRAPH
+    assert 'unified-test-token' not in json.dumps(publisher.snapshot())
+    with patch('publish_accounts.api_json') as refresh:
+        session, _ = accounts.instagram_session(publisher.vault, publisher.store.connection)
+    refresh.assert_not_called()
+    assert session.headers['Authorization'] == 'Bearer unified-test-token'
+
+
+@pytest.mark.parametrize('profiles', [[], None, [{'id': '1234', 'username': 'wrong'}],
+                                    [{'id': '../unsafe', 'username': accounts.INSTAGRAM_HANDLE}]])
+def test_unified_instagram_rejects_missing_or_invalid_target(publisher, profiles):
+    with patch('publish_accounts.api_json', return_value={'data': profiles}), pytest.raises(accounts.PublishError):
+        publisher.accounts.instagram_connect('test-token', login_mode='unified')
+    assert publisher.vault.get('instagram') is None
+
+
+@pytest.mark.parametrize('mode,secret', [('other', ''), ('unified', 'unneeded-secret')])
+def test_instagram_rejects_invalid_login_configuration_before_network(publisher, mode, secret):
+    with patch('publish_accounts.api_json') as api, pytest.raises(ValueError):
+        publisher.accounts.instagram_connect('test-token', secret, mode)
+    api.assert_not_called()
+
+
 @pytest.mark.parametrize('endpoint', ['http://example.com', 'https://localhost', 'https://127.0.0.1',
                                     'https://s3.example.com/bucket', 'https://key@s3.example.com'])
 def test_storage_rejects_unsafe_endpoints(publisher, endpoint):
@@ -274,13 +305,15 @@ def instagram_context(publisher, record, replies, client=None):
             patch('publish_uploads.api_json', side_effect=replies))
 
 
-def test_instagram_stages_selected_asset_publishes_and_cleans(publisher):
+@pytest.mark.parametrize('login_mode', ['instagram', 'unified'])
+def test_instagram_stages_selected_asset_publishes_and_cleans(publisher, login_mode):
     record = saved_job(publisher, youtube=False, instagram=True)
     client = Mock()
     contexts = instagram_context(publisher, record, [
         {'id': '456'}, {'status_code': 'FINISHED'}, {'id': '789'},
         {'permalink': 'https://www.instagram.com/reel/test/'}], client)
-    with contexts[0], contexts[1], contexts[2], contexts[3] as api:
+    with contexts[0] as auth, contexts[1], contexts[2], contexts[3] as api:
+        auth.return_value[1]['login_mode'] = login_mode
         uploads.instagram_upload(publisher, record, Mock())
     assert record['status'] == 'published'
     assert record['data']['url'] == 'https://www.instagram.com/reel/test/'
@@ -288,7 +321,18 @@ def test_instagram_stages_selected_asset_publishes_and_cleans(publisher):
     assert api.call_args_list[2].kwargs['json'] == {'creation_id': '456'}
     assert client.upload_file.call_args.args[0] == record['asset']
     assert 'ACL' not in client.upload_file.call_args.kwargs['ExtraArgs']
+    graph = accounts.instagram_graph({'login_mode': login_mode})
+    assert all(call.args[2].startswith(graph + '/') for call in api.call_args_list)
     client.delete_object.assert_called_once()
+
+
+def test_instagram_resume_rejects_changed_login_method(publisher):
+    record = saved_job(publisher, youtube=False, instagram=True)
+    record['data'] = {'container': '456', 'publish_requested': True}
+    with patch('publish_uploads.instagram_session', return_value=(Mock(), {'id': '1234', 'login_mode': 'unified'})), \
+            patch('publish_uploads.api_json') as api, pytest.raises(accounts.PublishError, match='different Instagram login'):
+        uploads.instagram_upload(publisher, record, Mock())
+    api.assert_not_called()
 
 
 def test_instagram_ambiguous_publish_reconciles_without_second_post(publisher):
@@ -351,3 +395,27 @@ def test_instagram_uncertain_publish_never_creates_another_container(publisher, 
     with contexts[0], contexts[1], contexts[2] as asset, contexts[3], pytest.raises(accounts.PublishError, match='earlier publish'):
         uploads.instagram_upload(publisher, record, Mock())
     asset.assert_not_called()
+
+
+def test_batch_preflights_all_clips_and_skips_published_targets(publisher):
+    first = saved_job(publisher)
+    first['status'] = 'uploaded'
+    publisher.store.save(first)
+    directory = publisher.output / 'test_run'
+    second = directory / 'short_02.mp4'
+    second.write_bytes(b'another reviewed video')
+    clips = [dict(name=name, start=0, end=36, title=name, description='', url='/media/test_run/' + name)
+             for name in ('short_01.mp4', 'short_02.mp4')]
+    settings = dict(youtube=True, instagram=False, privacy='private', made_for_kids=False)
+    with patch('media.validate_short'):
+        plan = publisher.review_batch('test_run', clips, directory, settings)
+        second.write_bytes(b'changed after review')
+        with pytest.raises(ValueError, match='changed'):
+            publisher.commit(plan['review_id'])
+        assert len(publisher.store.history()) == 1
+        plan = publisher.review_batch('test_run', clips, directory, settings)
+    ids, run = publisher.commit(plan['review_id'])
+    assert run == 'test_run'
+    assert len(ids) == 1
+    second_record = publisher.store.get(ids[0])
+    assert second_record['name'] == second_record['meta']['title'] == 'short_02.mp4'

@@ -63,7 +63,8 @@ def edit_headline(output: Path, run: str, name: str, text: str) -> None:
         make_ass(overlay, headline, end - start, clip.get('captions', []))
         render_short(source, target, overlay, start, end - start, track)
     clip['headline'] = headline
-    clip['title'] = (headline + ' #Fortnite #Shorts').strip()
+    game_tag = '#GTA6' if report['config'].get('game') == 'gta6' else '#Fortnite'
+    clip['title'] = f'{headline} {game_tag} #Shorts'.strip()
     save_report(directory, report)
     print(f'done: {manifest}', flush=True)
 

@@ -102,3 +102,33 @@ def test_combat_mode_prefers_multi_kill_over_louder_talking():
     events = [Event(40, 4.5, 'kill_counter_change', 1.), Event(40, 100, 'mic_reaction'),
               Event(110, 4.5, 'kill_counter_change', 1.), Event(116, 4.5, 'kill_counter_change', 1.)]
     assert select_clips(events, 160, 1, combat_only=True)[0].anchor >= 110
+
+
+def test_more_clips_exclude_completed_windows_from_the_same_replay(tmp_path):
+    import json
+    from clipper import used_replay_windows
+
+    for source in ('Abc123_-xyz', 'Def123_-xyz'):
+        run = tmp_path / (source + '_old')
+        run.mkdir()
+        (run / 'short_01.mp4').touch()
+        (run / 'manifest.json').write_text(json.dumps({
+            'source': {'video_id': source},
+            'shorts': [dict(path='short_01.mp4', status='review_required', start_seconds=20, end_seconds=56),
+                       dict(path='short_02.mp4', status='review_required', start_seconds=70, end_seconds=106)],
+        }))
+    excluded = used_replay_windows(tmp_path, 'Abc123_-xyz')
+    assert excluded == ((20, 56),)
+    events = [Event(45, 10, 'mic_reaction'), Event(90, 5, 'mic_reaction')]
+    clips = select_clips(events, 140, 3, excluded=excluded)
+    assert [clip.anchor for clip in clips] == [90]
+
+
+def test_audience_peak_prioritizes_footage_without_creating_an_event():
+    events = [Event(40, 9, 'mic_reaction'), Event(90, 5, 'mic_reaction')]
+    interest = [(80, 100, .6, 'most_replayed'), (145, 155, .8, 'live_viewer_spike')]
+    clips = select_clips(events, 180, 1, audience_windows=interest)
+    assert clips[0].anchor == 90
+    assert 'most_replayed' in clips[0].signals
+    assert select_clips([], 180, 1, audience_windows=interest) == []
+    assert select_clips(events, 180, 1, combat_only=True, audience_windows=interest) == []

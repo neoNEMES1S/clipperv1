@@ -49,11 +49,19 @@ def test_portrait_render_format_audio_and_faststart(source, tmp_path, text):
     assert not list(tmp_path.glob('*.partial.mp4'))
 
 
-def test_cli_local_end_to_end_and_reuse(source, tmp_path):
+@pytest.mark.parametrize('game', ['fortnite', 'gta6'])
+def test_cli_end_to_end_and_reuse_across_processes(source, tmp_path, game):
     root = Path(__file__).resolve().parents[1]
     output = tmp_path / 'drafts'
-    command = [sys.executable, str(root / 'clipper.py'), '--input', str(source),
-               '--output', str(output), '--mic-track', '0', '--no-transcribe', '--max-shorts', '1']
+    replay = str(source)
+    if game == 'gta6':
+        cache = output / '_youtube_downloads'
+        cache.mkdir(parents=True)
+        shutil.copy2(source, cache / 'Abc123_-xyz.mkv')
+        replay = 'https://youtube.com/live/Abc123_-xyz'
+    command = [sys.executable, str(root / 'clipper.py'), '--input', replay,
+               '--output', str(output), '--mic-track', '0', '--no-transcribe', '--max-shorts', '1',
+               '--game', game]
     completed = subprocess.run(command, capture_output=True, text=True)
     assert completed.returncode == 0, completed.stdout + completed.stderr
     manifest = next(output.glob('*/manifest.json'))
@@ -64,6 +72,10 @@ def test_cli_local_end_to_end_and_reuse(source, tmp_path):
     target = manifest.parent / short['path']
     assert short['end_seconds'] <= report['source']['duration_seconds']
     assert short['transcript'] == ''
+    if game == 'gta6':
+        assert 'skipping download' in completed.stdout
+        assert 'checking YouTube replay status' not in completed.stdout
+        assert '#GTA6' in short['title']
     from edit_clip import edit_headline
     original = target.read_bytes()
     edit_headline(output, manifest.parent.name, short['path'], 'A custom headline')
@@ -71,10 +83,16 @@ def test_cli_local_end_to_end_and_reuse(source, tmp_path):
     assert target.read_bytes() != original
     assert json.loads(manifest.read_text())['shorts'][0]['headline'] == 'A custom headline'
     before = target.stat().st_mtime_ns
+    if game == 'gta6':
+        command[command.index('--input') + 1] = 'https://youtu.be/Abc123_-xyz?t=20'
     completed = subprocess.run(command, capture_output=True, text=True)
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert target.stat().st_mtime_ns == before
     assert 'reusing validated' in completed.stdout
+    if game == 'gta6':
+        assert 'skipping download' in completed.stdout
+        assert 'checking YouTube replay status' not in completed.stdout
+        assert json.loads(manifest.read_text())['shorts'][0]['title'] == 'A custom headline #GTA6 #Shorts'
     assert json.loads(manifest.read_text())['shorts'][0]['headline'] == 'A custom headline'
 
 

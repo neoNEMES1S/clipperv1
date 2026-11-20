@@ -11,11 +11,16 @@ import threading
 import time
 from urllib.parse import urlsplit
 
-YOUTUBE_HANDLE = 'neonemesis8055'
-INSTAGRAM_HANDLE = 'tyler1butsane'
+YOUTUBE_HANDLE = 'viceframe-q5r'
+INSTAGRAM_HANDLE = 'viceframe__'
 GOOGLE_SCOPES = ['https://www.googleapis.com/auth/youtube.upload',
                  'https://www.googleapis.com/auth/youtube.readonly']
 GRAPH = 'https://graph.instagram.com/v24.0'
+UNIFIED_GRAPH = 'https://graph.facebook.com/v27.0'
+
+
+def instagram_graph(account):
+    return UNIFIED_GRAPH if account.get('login_mode') == 'unified' else GRAPH
 
 
 class PublishError(RuntimeError):
@@ -170,8 +175,12 @@ class Accounts:
         self.vault.put('youtube', dict(public, credentials=json.loads(credentials.to_json())))
         self.save_public('youtube', public)
 
-    def instagram_connect(self, token, app_secret='') -> None:
+    def instagram_connect(self, token, app_secret='', login_mode='instagram') -> None:
         import requests
+        if login_mode not in ('instagram', 'unified'):
+            raise ValueError('Choose Instagram Login or Unified Login.')
+        if login_mode == 'unified' and app_secret:
+            raise ValueError('Unified Login tokens do not use the Instagram token exchange. Leave app secret empty.')
         token = plain_secret(token, 'Instagram account access token')
         expires = None
         if app_secret:
@@ -182,12 +191,23 @@ class Accounts:
             expires = time.time() + int(result['expires_in'])
         session = requests.Session()
         session.headers['Authorization'] = 'Bearer ' + token
-        profile = api_json(session, 'GET', GRAPH + '/me', 'Instagram', params={'fields': 'user_id,username'})
+        if login_mode == 'unified':
+            profiles = api_json(session, 'GET', UNIFIED_GRAPH + '/me/assigned_instagram_accounts',
+                                'Instagram', params={'fields': 'id,username'}).get('data', [])
+            if not isinstance(profiles, list):
+                raise PublishError('Instagram returned an unreadable account list. Reconnect the account.')
+            matches = [p for p in profiles if isinstance(p, dict)
+                       and str(p.get('username', '')).lower() == INSTAGRAM_HANDLE]
+            if len(matches) != 1:
+                raise PublishError(f'Share Instagram @{INSTAGRAM_HANDLE} with this app, then reconnect.')
+            profile = matches[0]
+        else:
+            profile = api_json(session, 'GET', GRAPH + '/me', 'Instagram', params={'fields': 'user_id,username'})
         identity = str(profile.get('user_id') or profile.get('id') or '')
         if (str(profile.get('username', '')).lower() != INSTAGRAM_HANDLE
                 or not re.fullmatch(r'\d{1,64}', identity)):
             raise PublishError(f'Connect Instagram @{INSTAGRAM_HANDLE}; this token belongs to another account.')
-        public = {'id': identity, 'handle': INSTAGRAM_HANDLE, 'expires_at': expires}
+        public = {'id': identity, 'handle': INSTAGRAM_HANDLE, 'expires_at': expires, 'login_mode': login_mode}
         self.vault.put('instagram', dict(public, access_token=token, connected_at=time.time()))
         self.save_public('instagram', public)
 

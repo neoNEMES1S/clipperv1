@@ -1,4 +1,4 @@
-# Fortnite Clipper
+# Gaming Clipper
 
 Generate **review-required vertical Shorts** from a completed YouTube livestream replay, or a local OBS recording. Use the local dashboard or the CLI after setup. The dashboard defaults to up to 25 clips; the CLI defaults to 3. Processing runs locally except replay/model downloads. The optional publishing panel uploads only a selected, reviewed clip after **Upload now**.
 
@@ -8,17 +8,45 @@ This is an explainable candidate finder, not a kill detector or a guarantee of e
 
 After the one-time Python/FFmpeg setup below, double-click **Start Clipper.command** on Mac or **Start Clipper.bat** on Windows. On this Mac, the existing environment, small model, and local FFmpeg tools are already prepared. The launcher opens **http://127.0.0.1:8765** in your browser.
 
-1. Paste a completed YouTube replay URL.
-2. Choose a clip limit (1–100, default 25), then click **Generate clips**. The limit is a ceiling; only qualifying, distinct combat moments are selected.
+1. Choose **Fortnite** or **GTA 6**, then paste a completed YouTube replay URL. Fortnite requires confirmed elimination-counter events; GTA 6 selects audio peaks that may capture action or reactions.
+2. Choose a clip limit (1–100, default 25), then click **Generate clips**. The limit is a ceiling; only qualifying, distinct moments are selected for the chosen game.
 3. Follow the real processing stages, then play/download clips or open their output folder. Use the run selector to revisit earlier results. Older audio-only runs are labelled separately.
+
+The dashboard initially selects GTA 6 and remembers your game choice in this browser. Check the Game field before generating: Fortnite mode requires a confirmed elimination counter and can reject GTA footage even when audio peaks exist. Progress logs identify the game being processed. The CLI continues to default to Fortnite; pass `--game gta6` for GTA footage.
 
 To change the text at the top of an existing Short, edit **Top headline** underneath its preview and click **Save & re-render**. Leave it blank to remove the headline. Use up to 72 characters that fit within three short lines. Only that clip is rendered again from the retained original replay; timing, mixed audio and saved speech captions are preserved. The preview/download refreshes after completion. The first edit saves `short_01.original.mp4` (and equivalent names) beside the clip as a permanent original backup. Re-running the same processing job retains the edited headline. This editor changes the top headline; it does not edit the speech transcript.
 
-Keep the launcher/terminal window open while processing. Closing the browser tab does not stop a job; reopening the page reconnects to it. Press Ctrl+C in the launcher to stop the server and active processing. Completed clips and source downloads are retained. One job runs at a time; the dashboard uses combat-only selection, the small multilingual Whisper model, and 28 seconds before / 8 seconds after each event.
+Keep the launcher/terminal window open while processing. Closing the browser tab does not stop a job; reopening the page reconnects to it. Press Ctrl+C in the launcher to stop the server and active processing. Completed clips and source downloads are retained. One job runs at a time; the dashboard uses the small multilingual Whisper model and 28 seconds before / 8 seconds after each event. Fortnite uses combat-only selection; GTA 6 uses audio-peak selection.
+
+Saved replays are remembered on disk in `shorts/_youtube_downloads/` by YouTube video ID. After restarting Clipper, paste the same stream URL and click **Generate clips**: a valid saved replay is reused before any YouTube request, then analysis and clip generation continue. Watch, live-replay and shortened URLs for the same video share that file, across both games. Progress reports when the download is skipped. Keep this folder to retain your streams; missing or invalid media is downloaded again. An identical run reuses validated completed clips and preserves edited headlines.
+
+GTA 6 mode uses the existing loudness detector, rather than a game-specific HUD or mission detector. Loud conversation, music and effects can all trigger it; review the drafts. GTA clips retain GTA 6 titles/tags in history, headline edits and publishing. The dashboard does not need Fortnite OCR dependencies for GTA mode.
+
+For GTA 6 from the Mac/Linux CLI:
+
+```sh
+.venv/bin/python clipper.py --input "https://youtu.be/YOUR_VIDEO_ID" --output shorts --game gta6 --model small --max-shorts 25 --pre-roll 28 --post-roll 8
+```
+
+On Windows use `.\.venv\Scripts\python.exe`. `--game fortnite` is the CLI default, preserving the existing audio-led CLI workflow unless `--combat-only` is supplied. `--combat-only` and `--ocr` are Fortnite-only options.
 
 The interface uses the Python standard library and local HTML/CSS/JS, with no Node build, frontend packages, remote fonts or CDNs. It binds only to loopback and serves completed clips from the output manifests. History survives restarts; live progress is held in memory, while detailed pipeline logs remain in the output folders. It is a local desktop utility, not a remotely hosted service.
 
 If double-click launching is unavailable, run `.venv/bin/python app.py` on Mac/Linux or `.\\.venv\\Scripts\\python.exe app.py` on Windows. If port 8765 is already occupied, close the previous launcher or run `app.py --port 8766`. `--no-browser` starts just the server. FFmpeg/FFprobe can be on PATH or placed in the ignored `.local/bin/` folder (use `.exe` on Windows). Mac Homebrew executable paths are also checked.
+
+## Automatic clip titles
+
+The dashboard drafts each new clip's title from four sampled gameplay frames and its Whisper transcript, using **Qwen3-VL 2B through local Ollama**. The headline is burned into the clip and also used for its posting title. Review it in **Top headline**, edit if needed, and choose **Save & re-render** before posting. The model can misinterpret gameplay; a suggested title is not a verified event description.
+
+On this Mac, the vision model is installed. Keep Ollama running. For setup on another machine, install [Ollama](https://ollama.com), then run:
+
+```sh
+ollama pull qwen3-vl:2b-instruct
+```
+
+Clip frames and transcript go only to `127.0.0.1:11434`, with proxy settings bypassed. There is no cloud title API. The model download is about 1.9 GB; title generation adds processing time. If Ollama is unavailable or cannot identify a clear action, generation keeps the generic headline and records a warning instead of failing the clip.
+
+For CLI runs, add `--auto-title` to enable this step. It is off by default in the CLI. Dry runs never call the vision model. Automatic-title runs have separate identities from older generic-title runs, preserving the older clips. Repeating the same automatic-title run reuses completed clips and preserves any manually edited headline.
 
 ## Publish to YouTube and Instagram
 
@@ -32,8 +60,9 @@ On Windows use `.\.venv\Scripts\python.exe -m pip install -r requirements-publis
 
 Open the **YouTube**, **Instagram**, and **Temporary storage** cards under **Publish your clips**. Enter credentials in this local page, never in chat or the remote design preview.
 
-- **YouTube:** enable YouTube Data API v3 in your Google Cloud project; use a **Desktop app** OAuth client JSON. Add your Google account as a test user if the consent screen is in testing. Import the JSON and choose **Connect YouTube**. The system browser uses a loopback callback with PKCE and requests upload/channel-read permissions. Sign in to **@neonemesis8055**; Clipper checks the selected channel ID against that handle and rejects another channel. See [Google’s desktop OAuth setup](https://developers.google.com/identity/protocols/oauth2/native-app).
-- **Instagram:** use the access token generated for **@tyler1butsane** through your Meta app’s **Instagram Login** setup, with `instagram_business_basic` and `instagram_business_content_publish`. The professional account must be eligible for your app’s permissions/testing mode. Paste the token into the password field. An optional app secret exchanges a short-lived token for a long-lived token; it is used for that request and not retained. Known long-lived tokens are refreshed when nearing expiry; tokens entered without an exchange have unknown expiry and may need manual reconnection. This first local version uses token entry rather than hosted Meta OAuth. See [Meta’s Instagram Login guide](https://developers.facebook.com/docs/instagram-platform/instagram-api-with-instagram-login/business-login/).
+- **YouTube:** enable YouTube Data API v3 in your Google Cloud project; use a **Desktop app** OAuth client JSON. Add your Google account as a test user if the consent screen is in testing. Import the JSON and choose **Connect YouTube**. The system browser uses a loopback callback with PKCE and requests upload/channel-read permissions. Sign in to **@viceframe-q5r**; Clipper checks the selected channel ID against that handle and rejects another channel. See [Google’s desktop OAuth setup](https://developers.google.com/identity/protocols/oauth2/native-app).
+- **Instagram:** new Meta apps use **Unified Login** and require a business portfolio owning the app and the professional **@viceframe__** account. Create a compatible configuration with `instagram_basic` and `instagram_content_publish` (Meta may also require `instagram_manage_messages` for compatibility), invite/accept the account as an Instagram Tester, then generate a test token. Select **Unified Login** in Clipper, paste the token into the password field and leave app secret empty. Clipper discovers the shared account using `/me/assigned_instagram_accounts`, verifies the handle, and uses `graph.facebook.com/v27.0` for publishing. Reconnect when Meta expires or revokes the token. This local version uses token entry rather than hosted Meta OAuth. See [Meta’s Unified Login setup](https://developers.facebook.com/documentation/instagram-platform/instagram-api-with-unified-login/get-started).
+- **Older Instagram Login apps:** select **Instagram Login**, with `instagram_business_basic` and `instagram_business_content_publish`. The optional app secret exchanges a short-lived token for a long-lived token and is not retained. Known long-lived tokens refresh near expiry; tokens entered without an exchange have unknown expiry and may need manual reconnection. Existing saved connections continue using this method.
 - **Temporary storage:** enter your HTTPS S3-compatible endpoint without a bucket path, bucket, region (`auto` for R2), and access/secret keys. Use a private bucket and credentials with PutObject, GetObject and DeleteObject access to Clipper’s `clipper/` prefix. Temporary AWS session credentials are not supported. “Configured” means saved; connectivity is checked during upload. Clipper does not change bucket ACLs or policies. [Instagram Login publishing](https://developers.facebook.com/docs/instagram-platform/content-publishing/) requires Meta to fetch an HTTPS media URL; Clipper stages only the selected clip and creates a one-hour signed fetch URL.
 
 Credentials and YouTube resumable session URLs are saved through the native OS credential store (macOS Keychain / Windows Credential Manager). Plaintext fallback is refused. If the OS store asks for access, approve it locally. **Disconnect** removes the saved account token; it does not revoke permissions at Google/Meta. Google’s client configuration remains available locally for reconnection.
@@ -173,7 +202,7 @@ Manifests are replaced atomically. Rendering writes a temporary MP4 and validate
 
 Only a single accessible, completed video/replay is accepted. Playlists (including video links with `list=`), malformed IDs, non-YouTube hosts and remote schemes other than HTTP/HTTPS are rejected. Ongoing, upcoming, and still-processing `post_live` streams are rejected; try again after the replay becomes playable. Private, removed, or otherwise restricted content is unsupported. There is no authentication or access-control bypass.
 
-Downloads use a stable video-ID cache and a separate partial directory. A cache hit must pass FFprobe checks for readable metadata, positive duration, video and audio. Corrupt entries are replaced only after a new download validates. Metadata is still checked on every URL run, so rerunning a URL requires connectivity even if the media is cached. For offline processing, pass the cached path with `--mic-track 0`.
+Downloads use a stable video-ID cache and a separate partial directory. A cache hit must pass FFprobe checks for readable metadata, positive duration, video and audio. Corrupt entries are replaced only after a new download validates. A valid saved replay skips both YouTube metadata requests and downloading, including after an application restart. Only cache misses require YouTube connectivity and replay-availability checks. Offline processing also needs the selected Whisper model already cached (or `--no-transcribe`).
 
 Video storage depends on bitrate: at 8 Mb/s, one hour is approximately 3.6 GB. Allow roughly twice the source size during download/merge, plus drafts and temporary analysis audio (about 115 MB per hour). Temporary audio uses the system temp directory and is removed after analysis. Whisper model weights occupy additional space in its model cache. Interrupted downloads can retain partial files for resume.
 
@@ -237,4 +266,4 @@ The `.github/workflows/windows-tests.yml` installs Python 3.11, Node 24, FFmpeg,
 
 Before calling this ready for real streams, process a **user-owned, completed Fortnite replay** and manually review the generated drafts for HUD visibility, caption timing/Hindi font rendering, audible mixed audio and useful selection. Check actual files/times against the manifest, run the command again to confirm cache/clip reuse, and try an invalid/live link to verify the error. Automated synthetic tests do not establish real YouTube download compatibility, transcription accuracy, or highlight quality. Windows installation and real replay review must be checked on the target machine.
 
-Gameplay model training, real-time capture, cloud deployment, automatic/scheduled posting and other games are outside this release.
+Gameplay model training, real-time capture, cloud deployment, automatic/scheduled posting and game-specific detection beyond the Fortnite HUD are outside this release.

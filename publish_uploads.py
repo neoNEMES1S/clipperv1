@@ -8,7 +8,7 @@ import re
 import time
 from urllib.parse import urlsplit
 
-from publish_accounts import GRAPH, PublishError, api_json, google_session, instagram_session
+from publish_accounts import GRAPH, PublishError, api_json, google_session, instagram_graph, instagram_session
 
 CHUNK = 8 * 1024 * 1024
 
@@ -179,7 +179,7 @@ def media_id(result: dict) -> str:
     return identity
 
 
-def mark_instagram_published(publisher, session, record, result, save):
+def mark_instagram_published(publisher, session, record, result, save, graph):
     data = record['data']
     identity = media_id(result) if result else None
     record['status'] = 'published'
@@ -191,7 +191,7 @@ def mark_instagram_published(publisher, session, record, result, save):
     save('Reel published')
     if data.get('remote_id'):
         try:
-            link = api_json(session, 'GET', GRAPH + '/' + data['remote_id'], 'Instagram',
+            link = api_json(session, 'GET', graph + '/' + data['remote_id'], 'Instagram',
                             params={'fields': 'permalink'}).get('permalink', '')
             parsed = urlsplit(link)
             if parsed.scheme == 'https' and parsed.hostname in ('www.instagram.com', 'instagram.com'):
@@ -207,14 +207,17 @@ def instagram_upload(publisher, record: dict, save) -> None:
     if account['id'] != record['account']:
         raise PublishError('The connected Instagram account changed. Reconnect the original account.')
     data = record['data']
+    graph = instagram_graph(account)
+    if data.get('container') and data.get('graph', GRAPH) != graph:
+        raise PublishError('This upload started with a different Instagram login method. Reconnect with that method before resuming.')
     existing = data.get('container')
     if existing:
         if not re.fullmatch(r'\d{1,64}', existing):
             raise PublishError('Invalid saved Instagram container.')
-        status = api_json(session, 'GET', GRAPH + '/' + existing, 'Instagram',
+        status = api_json(session, 'GET', graph + '/' + existing, 'Instagram',
                           params={'fields': 'status_code'}).get('status_code')
         if status == 'PUBLISHED':
-            mark_instagram_published(publisher, session, record, None, save)
+            mark_instagram_published(publisher, session, record, None, save, graph)
             return
         if status in ('ERROR', 'EXPIRED'):
             if data.get('publish_requested'):
@@ -240,16 +243,17 @@ def instagram_upload(publisher, record: dict, save) -> None:
         parsed = urlsplit(url)
         if parsed.scheme != 'https' or parsed.hostname != urlsplit(config['endpoint']).hostname:
             raise PublishError('Storage returned an unexpected media URL. Upload stopped.')
-        result = api_json(session, 'POST', GRAPH + '/' + record['account'] + '/media', 'Instagram',
+        data['graph'] = graph
+        result = api_json(session, 'POST', graph + '/' + record['account'] + '/media', 'Instagram',
                           json={'media_type': 'REELS', 'video_url': url, 'caption': record['meta']['caption'],
                                 'share_to_feed': True})
         data['container'] = media_id(result)
         save('waiting for Instagram to process the video')
     for _ in range(60):
-        status = api_json(session, 'GET', GRAPH + '/' + data['container'], 'Instagram',
+        status = api_json(session, 'GET', graph + '/' + data['container'], 'Instagram',
                           params={'fields': 'status_code'}).get('status_code')
         if status == 'PUBLISHED':
-            mark_instagram_published(publisher, session, record, None, save)
+            mark_instagram_published(publisher, session, record, None, save, graph)
             return
         if status == 'FINISHED':
             break
@@ -265,13 +269,13 @@ def instagram_upload(publisher, record: dict, save) -> None:
     save('publishing the reviewed Reel')
     # Reuse this container on every retry; never create a second container after a publish attempt.
     try:
-        result = api_json(session, 'POST', GRAPH + '/' + record['account'] + '/media_publish', 'Instagram',
+        result = api_json(session, 'POST', graph + '/' + record['account'] + '/media_publish', 'Instagram',
                           json={'creation_id': data['container']})
     except PublishError:
-        status = api_json(session, 'GET', GRAPH + '/' + data['container'], 'Instagram',
+        status = api_json(session, 'GET', graph + '/' + data['container'], 'Instagram',
                           params={'fields': 'status_code'}).get('status_code')
         if status == 'PUBLISHED':
-            mark_instagram_published(publisher, session, record, None, save)
+            mark_instagram_published(publisher, session, record, None, save, graph)
             return
         raise
-    mark_instagram_published(publisher, session, record, result, save)
+    mark_instagram_published(publisher, session, record, result, save, graph)

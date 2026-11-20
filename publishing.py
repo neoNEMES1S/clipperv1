@@ -87,11 +87,11 @@ class Store:
         records.sort(key=lambda record: record['updated'], reverse=True)
         fields = ('id', 'target', 'account', 'handle', 'run', 'name', 'sha', 'status', 'error', 'updated')
         return [dict({key: record[key] for key in fields},
-                     progress=record['data'].get('progress', 0), url=record['data'].get('url'),
+                     progress=record['data'].get('progress', 0), log=record['data'].get('log', []), url=record['data'].get('url'),
                      visibility=record['data'].get('visibility'),
                      cleanup_pending=bool(record['data'].get('object_key')),
                      account_link=bool(record['data'].get('account_link')))
-                for record in records[:100]]
+                for record in records[:200]]
 
 
 def posting_details(data: dict) -> tuple[list[str], dict]:
@@ -136,6 +136,23 @@ class Publisher:
                 'history': self.store.history()}
 
     def review(self, run: str, clip: dict, path: Path, data: dict) -> dict:
+        plan = self.plan(run, clip, path, data)
+        return self.save_review([plan]) | self.describe(plan)
+
+    def review_batch(self, run: str, clips: list[dict], directory: Path, data: dict) -> dict:
+        if not 1 <= len(clips) <= 100:
+            raise ValueError('Choose a run with 1 to 100 completed clips.')
+        plans = []
+        for clip in clips:
+            try:
+                plans.append(self.plan(run, clip, directory / clip['name'], dict(
+                    data, title=clip['title'], description=clip['description'],
+                    caption=clip['description'] or clip['title'])))
+            except (ValueError, RuntimeError) as exc:
+                raise ValueError(f"{clip['name']}: {exc}") from exc
+        return self.save_review(plans) | {'clips': [self.describe(plan) for plan in plans]}
+
+    def plan(self, run: str, clip: dict, path: Path, data: dict) -> dict:
         from media import validate_short
         if (not re.fullmatch(r'[\w-]{1,100}', run) or run.startswith('_')
                 or not re.fullmatch(r'short_\d+\.mp4', clip['name'])
@@ -168,7 +185,8 @@ class Publisher:
         plan = {'run': run, 'name': clip['name'], 'path': str(path.resolve()),
                 'duration': clip['end'] - clip['start'], 'sha': digest, 'meta': meta, 'entries': entries,
                 'storage': connections.get('storage', {}).get('id'), 'created': time.time(), 'retry': False}
-        return self.save_review(plan, clip['url'] + '?v=' + digest[:16])
+        plan['preview'] = clip['url'] + '?v=' + digest[:16]
+        return plan
 
     def review_retry(self, identifier: str) -> dict:
         record = self.store.get(identifier)
@@ -183,18 +201,22 @@ class Publisher:
                 'entries': [{'target': record['target'], 'account': record['account'], 'handle': record['handle'],
                              'previous': record['id'], 'status': record['status'], 'url': record['data'].get('url')}],
                 'storage': record.get('storage'), 'created': time.time(), 'retry': True}
-        return self.save_review(plan, '/publish-media/' + identifier)
+        plan['preview'] = '/publish-media/' + identifier
+        return self.save_review([plan]) | self.describe(plan)
 
-    def save_review(self, plan: dict, preview: str) -> dict:
+    def save_review(self, plans: list[dict]) -> dict:
         key = secrets.token_urlsafe(32)
         with self.lock:
-            self.reviews = {k: v for k, v in self.reviews.items() if time.time() - v['created'] <= 600}
+            self.reviews = {k: v for k, v in self.reviews.items() if time.time() - v[0]['created'] <= 600}
             if len(self.reviews) >= 20:
                 raise ValueError('Close old reviews and try again shortly.')
-            self.reviews[key] = plan
-        return {'review_id': key, 'run': plan['run'], 'name': plan['name'], 'sha': plan['sha'][:12],
+            self.reviews[key] = plans
+        return {'review_id': key}
+
+    def describe(self, plan: dict) -> dict:
+        return {'run': plan['run'], 'name': plan['name'], 'sha': plan['sha'][:12],
                 'duration': plan['duration'], 'meta': plan['meta'], 'destinations': plan['entries'],
-                'preview': preview, 'retry': plan['retry']}
+                'preview': plan['preview'], 'retry': plan['retry']}
 
     def asset_for(self, identifier: str) -> Path:
         record = self.store.get(identifier)
@@ -206,10 +228,18 @@ class Publisher:
 
     def commit(self, key: str) -> tuple[list[str], str]:
         with self.lock:
-            plan = self.reviews.pop(key, None)
-        if not plan or time.time() - plan['created'] > 600:
+            plans = self.reviews.pop(key, None)
+        if not plans or time.time() - plans[0]['created'] > 600:
             raise ValueError('This review expired. Review the upload again.')
         connections = self.store.connections()
+        for plan in plans:
+            self.validate_plan(plan, connections)
+        identifiers = list(dict.fromkeys(identifier for plan in plans for identifier in self.queue_plan(plan)))
+        if not identifiers:
+            raise ValueError('These destinations already have these clips. Open the saved post links in history.')
+        return identifiers, plans[0]['run']
+
+    def validate_plan(self, plan: dict, connections: dict) -> None:
         for entry in plan['entries']:
             if connections.get(entry['target'], {}).get('id') != entry['account']:
                 raise ValueError('The connected account changed. Review the upload again.')
@@ -219,6 +249,8 @@ class Publisher:
         path = Path(plan['path'])
         if not path.is_file() or file_hash(path) != plan['sha']:
             raise ValueError('The clip changed or is missing. Review its current version before uploading.')
+    def queue_plan(self, plan: dict) -> list[str]:
+        path = Path(plan['path'])
         assets = self.store.directory / 'publish_media'
         assets.mkdir(exist_ok=True, mode=0o700)
         asset = assets / (plan['sha'] + '.mp4')
@@ -250,9 +282,7 @@ class Publisher:
                 raise ValueError('A saved upload has different details. Resume it from history.')
             if record['status'] not in TERMINAL or record['data'].get('object_key'):
                 identifiers.append(record['id'])
-        if not identifiers:
-            raise ValueError('These destinations already have this clip. Open the saved post links in history.')
-        return identifiers, plan['run']
+        return identifiers
 
     def run(self, identifiers: list[str]) -> bool:
         from publish_uploads import youtube_upload, instagram_upload, cleanup_staging
@@ -265,6 +295,10 @@ class Publisher:
                 raise PublishError('The reviewed upload asset is damaged. No upload was attempted.')
 
             def save(stage: str):
+                log = record['data'].setdefault('log', [])
+                if not log or log[-1]['stage'] != stage:
+                    log.append({'time': time.time(), 'stage': stage})
+                    del log[:-30]
                 self.store.save(record)
                 print(f'upload: {record["target"]}: {stage}', flush=True)
 

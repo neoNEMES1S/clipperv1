@@ -19,7 +19,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlsplit
 import webbrowser
 
-from youtube_source import youtube_video_id
+from youtube_source import VIDEO_SUFFIXES, youtube_video_id
 from publishing import Publisher
 from publish_accounts import PublishError, publishing_setup
 
@@ -49,8 +49,10 @@ class Workspace:
         self.env = pipeline_environment()
         self.missing = [name for name in ('ffmpeg', 'ffprobe')
                         if not shutil.which(name, path=self.env['PATH'])]
-        self.missing += [name for name in ('numpy', 'faster_whisper', 'rapidocr_onnxruntime')
+        self.missing += [name for name in ('numpy', 'faster_whisper')
                          if importlib.util.find_spec(name) is None]
+        self.combat_missing = ([] if importlib.util.find_spec('rapidocr_onnxruntime')
+                               else ['rapidocr_onnxruntime'])
 
     def run_directory(self, identity: str) -> Path:
         if not re.fullmatch(r'[\w-]{1,100}', identity) or identity.startswith('_'):
@@ -81,13 +83,14 @@ class Workspace:
             clips.append({'name': name, 'start': start, 'end': end,
                           'title': str(clip.get('title', 'Draft clip')),
                           'description': str(clip.get('description', '')),
-                          'headline': clip.get('headline', str(clip.get('title', '')).removesuffix(' #Fortnite #Shorts')),
+                          'headline': clip.get('headline', str(clip.get('title', '')).removesuffix(' #Fortnite #Shorts').removesuffix(' #GTA6 #Shorts')),
                           'captions': bool(clip.get('captions')),
                           'url': f'/media/{identity}/{name}'})
         source = data.get('source', {})
-        return {'id': identity, 'revision': manifest.stat().st_mtime_ns,
+        return {'id': identity, 'revision': str(manifest.stat().st_mtime_ns),
                 'source_id': source.get('video_id') or identity,
                 'source_url': source.get('url'), 'status': data.get('status', 'unknown'),
+                'game': data.get('config', {}).get('game', 'fortnite'),
                 'combat_only': bool(data.get('config', {}).get('combat_only')),
                 'clips': clips, 'warnings': data.get('warnings', []), 'error': data.get('error')}
 
@@ -100,11 +103,37 @@ class Workspace:
                 continue  # A writer may be replacing a manifest; retry on the next poll.
         return sorted(runs, key=lambda run: run['revision'], reverse=True)
 
+    def downloads(self) -> list[dict]:
+        cache = self.output / '_youtube_downloads'
+        if cache.is_symlink() or not cache.is_dir():
+            return []
+        items = []
+        for path in cache.iterdir():
+            if (path.is_symlink() or not path.is_file() or path.suffix.lower() not in VIDEO_SUFFIXES
+                    or not re.fullmatch(r'[A-Za-z0-9_-]{11}', path.stem)):
+                continue
+            try:
+                info = path.stat()
+            except FileNotFoundError:
+                continue
+            items.append({'name': path.name, 'source_id': path.stem, 'bytes': info.st_size,
+                          'modified': info.st_mtime})
+        return sorted(items, key=lambda item: (item['modified'], item['name']))
+
+    def delete_download(self, name, modified) -> None:
+        with self.lock:
+            if self.job['status'] == 'running':
+                raise ValueError('Wait for the current job to finish before removing a download.')
+            if not any(item['name'] == name and item['modified'] == modified for item in self.downloads()):
+                raise ValueError('This download changed or is no longer available. Refresh and try again.')
+            (self.output / '_youtube_downloads' / name).unlink()
+
     def snapshot(self) -> dict:
         with self.lock:
             job = dict(self.job, log=list(self.lines))
         return {'app': 'clipper-local', 'token': self.token, 'job': job,
-                'runs': self.runs(), 'missing': self.missing, 'publishing': self.publisher.snapshot()}
+                'runs': self.runs(), 'missing': self.missing, 'combat_missing': self.combat_missing,
+                'downloads': self.downloads(), 'publishing': self.publisher.snapshot()}
 
     def publishing_action(self, action: str, data: dict, callback: str) -> dict:
         with self.lock:
@@ -119,7 +148,8 @@ class Workspace:
                 self.publisher.connection_error = ''
                 return {'url': accounts.google_begin(callback)}
             elif action == 'instagram-connect':
-                accounts.instagram_connect(data.get('access_token'), data.get('app_secret', ''))
+                accounts.instagram_connect(data.get('access_token'), data.get('app_secret', ''),
+                                           data.get('login_mode', 'instagram'))
             elif action == 'storage-connect':
                 accounts.storage_connect(data)
             elif action == 'disconnect':
@@ -130,6 +160,17 @@ class Workspace:
                 if not clip:
                     raise ValueError('Choose a completed clip.')
                 return self.publisher.review(run['id'], clip, self.run_directory(run['id']) / clip['name'], data)
+            elif action == 'prepare-batch':
+                run = self.read_run(data.get('run', ''))
+                if data.get('revision') != str(run['revision']):
+                    raise ValueError('This run changed. Review the refreshed clips.')
+                names = data.get('clips')
+                if not isinstance(names, list) or not names or any(not isinstance(name, str) for name in names):
+                    raise ValueError('Select at least one clip.')
+                clips = [clip for clip in run['clips'] if clip['name'] in names]
+                if len(clips) != len(names):
+                    raise ValueError('Choose clips from the current run.')
+                return self.publisher.review_batch(run['id'], clips, self.run_directory(run['id']), data)
             elif action == 'retry-review':
                 return self.publisher.review_retry(data.get('id'))
             elif action == 'commit':
@@ -143,20 +184,37 @@ class Workspace:
                 raise ValueError('Unknown publishing action.')
             return {'status': 'saved'}
 
-    def start(self, url: str, maximum: int) -> None:
+    def start(self, url: str, maximum: int, game: str = 'fortnite', new_moments: bool = False, mode: str = 'replay') -> None:
         if not isinstance(url, str) or len(url) > 2048:
             raise ValueError('Paste a completed YouTube replay URL.')
+        if mode not in ('replay', 'live'):
+            raise ValueError('Choose Replay or Live stream.')
         identity = youtube_video_id(url.strip())
         if type(maximum) is not int or not 1 <= maximum <= 100:
             raise ValueError('Choose a clip limit between 1 and 100.')
-        if self.missing:
-            raise ValueError('Setup needed: missing ' + ', '.join(self.missing) + '. See README setup instructions.')
+        if game not in ('fortnite', 'gta6'):
+            raise ValueError('Choose Fortnite or GTA 6.')
+        missing = self.missing + (self.combat_missing if game == 'fortnite' else [])
+        if missing:
+            raise ValueError('Setup needed: missing ' + ', '.join(missing) + '. See README setup instructions.')
         canonical = f'https://www.youtube.com/watch?v={identity}'
         model = 'models/small' if (ROOT / 'models' / 'small' / 'model.bin').is_file() else 'small'
         command = [sys.executable, '-u', str(ROOT / 'clipper.py'), '--input', canonical,
                    '--output', str(self.output), '--max-shorts', str(maximum), '--model', model,
-                   '--combat-only', '--pre-roll', '28', '--post-roll', '8']
-        self.launch(command, url=canonical, maximum=maximum, kind='replay')
+                   '--game', game, '--auto-title', '--pre-roll', '28', '--post-roll', '8']
+        command.append('--live' if mode == 'live' else '--audience-peaks')
+        if new_moments is True:
+            command.append('--new-moments')
+        if game == 'fortnite':
+            command.append('--combat-only')
+        self.launch(command, url=canonical, maximum=maximum, kind=mode, game=game)
+
+    def cancel_live(self) -> None:
+        with self.lock:
+            if self.job['status'] != 'running' or self.job.get('kind') != 'live':
+                raise ValueError('There is no live job to stop.')
+            self.job['cancelled'] = True
+            self.close()
 
     def start_headline(self, run: str, name: str, text: str) -> None:
         from edit_clip import normalize_headline
@@ -168,7 +226,8 @@ class Workspace:
                    '--run', run, '--clip', name, '--headline=' + text]
         self.launch(command, url=report['source_url'], maximum=len(report['clips']), kind='headline')
 
-    def launch(self, command: list[str], *, url: str, maximum: int, kind: str) -> None:
+    def launch(self, command: list[str], *, url: str, maximum: int, kind: str,
+               game: str | None = None) -> None:
         with self.lock:
             if self.job['status'] == 'running':
                 raise RuntimeError('A job is already processing. Wait for it to finish.')
@@ -177,10 +236,12 @@ class Workspace:
             self.process = subprocess.Popen(command, cwd=ROOT, env=self.env, stdout=subprocess.PIPE,
                                             stderr=subprocess.STDOUT, text=True, encoding='utf-8',
                                             errors='replace', bufsize=1, **options)
-            self.job = {'status': 'running', 'url': url, 'max_clips': maximum, 'result_run': None, 'kind': kind}
+            self.job = {'status': 'running', 'url': url, 'max_clips': maximum, 'result_run': None,
+                        'kind': kind, 'game': game}
             self.lines.clear()
             self.lines.append('Starting reviewed upload…' if kind == 'publish' else
-                              'Starting headline render…' if kind == 'headline' else 'Starting replay processing…')
+                              'Starting headline render…' if kind == 'headline' else
+                              f'Starting {"GTA 6" if game == "gta6" else "Fortnite"} replay processing…')
             threading.Thread(target=self.collect, args=(self.process,), daemon=True).start()
 
     def collect(self, process: subprocess.Popen) -> None:
@@ -197,8 +258,12 @@ class Workspace:
                             self.job['result_run'] = manifest.parent.name
             code = process.wait()
             with self.lock:
-                self.job['status'] = 'complete' if code == 0 else 'failed'
-                if code:
+                if self.job.get('cancelled'):
+                    self.job['status'] = 'cancelled'
+                    self.lines.append('Live job stopped.')
+                else:
+                    self.job['status'] = 'complete' if code == 0 else 'failed'
+                if code and not self.job.get('cancelled'):
                     self.lines.append('Processing stopped. Check the error above, then retry; source downloads are retained.')
         except OSError as exc:
             with self.lock:
@@ -363,11 +428,17 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(data, dict):
                 raise ValueError('Expected an object.')
             if self.path == '/api/start':
-                self.workspace.start(data.get('url'), data.get('max_clips'))
+                self.workspace.start(data.get('url'), data.get('max_clips'), data.get('game', 'fortnite'), data.get('new_moments', False), data.get('mode', 'replay'))
                 self.json_response({'status': 'running'}, 202)
+            elif self.path == '/api/live/stop':
+                self.workspace.cancel_live()
+                self.json_response({'status': 'stopping'})
             elif self.path == '/api/headline':
                 self.workspace.start_headline(data.get('run', ''), data.get('clip', ''), data.get('headline'))
                 self.json_response({'status': 'running'}, 202)
+            elif self.path == '/api/downloads/remove':
+                self.workspace.delete_download(data.get('name'), data.get('modified'))
+                self.json_response({'status': 'removed'})
             elif self.path == '/api/open-folder':
                 open_folder(self.workspace.run_directory(data.get('run', '')))
                 self.json_response({'status': 'opened'})

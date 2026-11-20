@@ -17,6 +17,7 @@ import app
 def workspace(tmp_path):
     workspace = app.Workspace(tmp_path / 'shorts')
     workspace.missing = []
+    workspace.combat_missing = []
     directory = workspace.output / 'Abc123_-xyz_123456789abc'
     directory.mkdir()
     (directory / 'short_01.mp4').write_bytes(bytes(range(256)))
@@ -82,7 +83,7 @@ def test_start_requires_token_and_valid_options(server, workspace):
         start.assert_not_called()
         with post(server, '/api/start', {'url': 'https://youtu.be/Abc123_-xyz', 'max_clips': 25}, workspace.token) as response:
             assert response.status == 202
-        start.assert_called_once_with('https://youtu.be/Abc123_-xyz', 25)
+        start.assert_called_once_with('https://youtu.be/Abc123_-xyz', 25, 'fortnite', False, 'replay')
 
 
 @pytest.mark.parametrize('url,maximum', [
@@ -106,9 +107,58 @@ def test_start_preserves_pipeline_defaults_and_blocks_parallel_jobs(workspace):
         assert command[command.index('--input') + 1] == 'https://www.youtube.com/watch?v=Abc123_-xyz'
         assert command[command.index('--max-shorts') + 1] == '25'
         assert '--combat-only' in command
+        assert '--auto-title' in command
         assert '--delete-download' not in command
+        assert workspace.job['game'] == 'fortnite'
+        assert any('Fortnite' in line for line in workspace.lines)
         assert popen.call_args.kwargs.get('shell', False) is False
         assert popen.call_count == 1
+
+
+def test_gta6_endpoint_uses_audio_selection_without_fortnite_ocr(server, workspace):
+    workspace.combat_missing = ['rapidocr_onnxruntime']
+    with patch('app.subprocess.Popen') as popen, patch.object(workspace, 'collect'):
+        with post(server, '/api/start', {'url': 'https://youtu.be/Abc123_-xyz',
+                                       'max_clips': 10, 'game': 'gta6'}, workspace.token) as response:
+            assert response.status == 202
+        command = popen.call_args.args[0]
+        assert command[command.index('--game') + 1] == 'gta6'
+        assert '--combat-only' not in command
+        assert '--ocr' not in command
+        assert '--auto-title' in command
+        assert '--delete-download' not in command
+        assert workspace.job['game'] == 'gta6'
+        assert any('GTA 6' in line for line in workspace.lines)
+
+
+@pytest.mark.parametrize('game', ['unknown', None, [], {}])
+def test_invalid_game_does_not_spawn(server, workspace, game):
+    with patch('app.subprocess.Popen') as popen:
+        with post(server, '/api/start', {'url': 'https://youtu.be/Abc123_-xyz',
+                                       'max_clips': 10, 'game': game}, workspace.token) as response:
+            assert response.status == 400
+        popen.assert_not_called()
+
+
+def test_fortnite_still_requires_ocr(workspace):
+    workspace.combat_missing = ['rapidocr_onnxruntime']
+    with patch('app.subprocess.Popen') as popen, pytest.raises(ValueError, match='rapidocr'):
+        workspace.start('https://youtu.be/Abc123_-xyz', 25)
+    popen.assert_not_called()
+
+
+def test_game_history_survives_workspace_restart(workspace):
+    directory = workspace.output / workspace.runs()[0]['id']
+    manifest = directory / 'manifest.json'
+    data = json.loads(manifest.read_text())
+    data['config'].update(game='gta6', combat_only=False)
+    data['shorts'][0]['title'] = 'A chase #GTA6 #Shorts'
+    manifest.write_text(json.dumps(data))
+    restarted = app.Workspace(workspace.output)
+    run = restarted.runs()[0]
+    assert run['game'] == 'gta6'
+    assert run['combat_only'] is False
+    assert run['clips'][0]['headline'] == 'A chase'
 
 
 @pytest.mark.parametrize('code,status', [(0, 'complete'), (1, 'failed')])
@@ -259,3 +309,36 @@ def test_oauth_callback_strips_code_and_reports_connection_error(server, workspa
             assert response.status == 200
             assert 'code=' not in response.geturl()
         assert workspace.publisher.snapshot()['connection_error'] == 'Connect again.'
+
+
+def test_removing_download_is_limited_to_listed_cache_files(workspace):
+    cache = workspace.output / '_youtube_downloads'
+    cache.mkdir()
+    replay = cache / 'Abc123_-xyz.mkv'
+    replay.write_bytes(b'replay')
+    clip = next(workspace.output.glob('*/short_01.mp4'))
+    (cache / 'Def123_-xyz.mkv').symlink_to(clip)
+    entry, = workspace.downloads()
+    with pytest.raises(ValueError):
+        workspace.delete_download('../' + clip.name, entry['modified'])
+    workspace.job['status'] = 'running'
+    with pytest.raises(ValueError):
+        workspace.delete_download(replay.name, entry['modified'])
+    workspace.job['status'] = 'idle'
+    workspace.delete_download(replay.name, entry['modified'])
+    assert not replay.exists()
+    assert clip.is_file()
+
+
+def test_batch_review_preserves_revision_and_only_selects_requested_clip(workspace):
+    run, = workspace.snapshot()['runs']
+    assert isinstance(json.loads(json.dumps(run))['revision'], str)
+    with patch.object(workspace.publisher, 'review_batch') as review:
+        workspace.publishing_action('prepare-batch', {
+            'run': run['id'], 'revision': run['revision'], 'clips': ['short_01.mp4'],
+        }, '')
+        assert [clip['name'] for clip in review.call_args.args[1]] == ['short_01.mp4']
+        with pytest.raises(ValueError, match='run changed'):
+            workspace.publishing_action('prepare-batch', {
+                'run': run['id'], 'revision': 'stale', 'clips': ['short_01.mp4'],
+            }, '')

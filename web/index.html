@@ -14,25 +14,44 @@
       <div id="connection" class="notice error" role="alert" hidden></div>
       <div class="top-grid">
         <section class="panel">
-          <div class="section-heading"><span class="eyebrow">FROM STREAM TO SHORTS</span><h2>Start with a replay</h2></div>
+          <div class="section-heading"><span class="eyebrow">FROM STREAM TO SHORTS</span><h2>Choose a stream</h2></div>
           <form id="generate-form">
-            <div class="fields">
-              <div class="url-field"><label for="replay-url">YouTube replay URL</label><input id="replay-url" name="url" type="url" placeholder="https://youtube.com/live/…" required maxlength="2048" autocomplete="off" spellcheck="false" aria-describedby="url-help"><span class="help" id="url-help">Use a completed stream that is playable on YouTube.</span></div>
+            <fieldset class="source-mode">
+              <legend class="label">Source</legend>
+              <label><input type="radio" name="source-mode" value="replay" checked><span>Replay</span></label>
+              <label><input type="radio" name="source-mode" value="live"><span>Live stream</span></label>
+            </fieldset>
+            <div id="replay-source" class="source-fields">
+              <label for="replay-url">YouTube replay URL</label>
+              <input id="replay-url" type="url" placeholder="https://www.youtube.com/watch?v=…" required maxlength="2048" autocomplete="off" spellcheck="false">
+              <label for="saved-replay">Or choose a downloaded stream</label>
+              <select id="saved-replay" disabled><option value="">Choose a downloaded stream…</option></select>
+              <p class="help">Uses Most Replayed peaks when available and reuses saved footage.</p>
+            </div>
+            <div id="live-source" class="source-fields" hidden>
+              <label for="live-url">YouTube live stream URL</label>
+              <input id="live-url" type="url" placeholder="https://www.youtube.com/live/…" maxlength="2048" autocomplete="off" spellcheck="false" disabled>
+              <p class="help">Monitors viewer spikes and generates drafts after the replay is ready. Keep Clipper running.</p>
+            </div>
+            <div class="source-options">
+              <div class="game-field"><label for="game">Game</label><select id="game" name="game" aria-describedby="game-help"><option value="fortnite">Fortnite</option><option value="gta6" selected>GTA 6</option></select></div>
               <div><label for="max-clips">Clip limit</label><input id="max-clips" name="max_clips" type="number" min="1" max="100" step="1" value="25" required aria-describedby="limit-help"><span class="help" id="limit-help">Up to 100</span></div>
             </div>
-            <div class="form-bottom"><p class="help">Confirmed eliminations only.<br>Fewer clips may qualify than your limit.</p><button class="primary" id="generate" type="submit">Generate clips <span aria-hidden="true">↗</span></button></div>
+            <label class="new-moments"><input id="new-moments" type="checkbox" checked> Skip footage already clipped from this stream</label>
+            <div class="form-bottom"><p class="help" id="game-help">Audio peaks select possible action and reaction moments. Review each clip.</p><button class="primary" id="generate" type="submit">Generate clips <span aria-hidden="true">↗</span></button></div>
             <p id="form-error" class="error-text" role="alert" hidden></p>
           </form>
         </section>
         <section class="panel progress-panel" aria-labelledby="progress-heading">
           <div class="progress-title"><h2 id="progress-heading">Processing</h2><span id="job-badge" class="badge">Ready</span></div>
           <p id="job-message" role="status">Ready for your next stream.</p>
+          <button id="stop-live" type="button" hidden>Stop live job</button>
           <details id="progress-details"><summary>Recent progress</summary><pre id="progress-log" tabindex="0">Progress will appear here.</pre></details>
           <p class="help keep-open">You can close this tab. Keep the Clipper launcher window open while it works.</p>
         </section>
       </div>
       <section class="results" aria-labelledby="results-heading">
-        <div class="results-heading"><div><span class="eyebrow">YOUR WORKSPACE</span><h2 id="results-heading">Clips, ready to review</h2></div><button id="open-folder" type="button" disabled>Open output folder <span aria-hidden="true">↗</span></button></div>
+        <div class="results-heading"><div><span class="eyebrow">YOUR WORKSPACE</span><h2 id="results-heading">Clips, ready to review</h2></div><div class="upload-actions"><button id="publish-all" class="primary" type="button" disabled>Publish all clips →</button><button id="open-folder" type="button" disabled>Open output folder <span aria-hidden="true">↗</span></button></div></div>
         <div class="run-bar"><div class="run-field"><label for="run-select">Replay / run</label><select id="run-select" disabled><option>No runs yet</option></select></div><div class="run-stat"><span class="label">Clips</span><strong id="clip-count">0</strong></div><div class="run-stat"><span class="label">Selection</span><span id="selection-mode">—</span></div></div>
         <div id="run-notice" class="notice" hidden></div>
         <p id="empty" class="empty">Your clips will appear here. Paste a replay above to get started.</p>
@@ -40,15 +59,15 @@
       </section>
       <section id="publishing" class="publishing" aria-labelledby="publishing-heading">
         <div class="results-heading"><div><span class="eyebrow">FROM DRAFT TO POST</span><h2 id="publishing-heading">Publish your clips</h2></div><span class="badge">Review first · upload when ready</span></div>
-        <p class="help">Only the clip you select is uploaded. Account credentials are saved in your computer’s credential store.</p>
+        <p class="help">Choose one clip or review a whole run before uploading.</p>
         <div id="publish-error" class="notice error" role="alert" hidden></div>
         <div class="account-grid">
-          <details class="panel"><summary><strong>YouTube</strong><span id="youtube-status">Not connected</span></summary><p class="help">@neonemesis8055</p>
+          <details class="panel"><summary><strong>YouTube</strong><span id="youtube-status">Not connected</span></summary><p class="help">@viceframe-q5r</p>
             <form id="youtube-connect" class="account-form"><label>Desktop OAuth client JSON<input id="google-config" type="file" accept=".json,application/json" required></label><p class="help">Choose your Google Cloud Desktop app credentials, then sign in to the target channel.</p><button type="submit">Connect YouTube ↗</button></form>
             <button class="disconnect" data-platform="youtube" type="button" hidden>Disconnect YouTube</button>
           </details>
-          <details class="panel"><summary><strong>Instagram</strong><span id="instagram-status">Not connected</span></summary><p class="help">@tyler1butsane · professional account</p>
-            <form id="instagram-connect" class="account-form"><label>Instagram Login access token<input name="access_token" type="password" autocomplete="off" required></label><label>App secret <span class="help">Optional: exchange a short-lived token for a long-lived token.</span><input name="app_secret" type="password" autocomplete="off"></label><p class="help">Token needs instagram_business_basic and instagram_business_content_publish permissions.</p><button type="submit">Connect Instagram</button></form>
+          <details class="panel"><summary><strong>Instagram</strong><span id="instagram-status">Not connected</span></summary><p class="help">@viceframe__ · professional account</p>
+            <form id="instagram-connect" class="account-form"><label>Login method<select name="login_mode"><option value="unified">Unified Login (new Meta apps)</option><option value="instagram">Instagram Login (older apps)</option></select></label><label>Access token<input name="access_token" type="password" autocomplete="off" required></label><label>App secret <span class="help">For older Instagram Login apps only: optionally exchange a short-lived token. Leave empty for Unified Login.</span><input name="app_secret" type="password" autocomplete="off"></label><p class="help">Unified Login: share @viceframe__ with instagram_basic and instagram_content_publish. Older Instagram Login: instagram_business_basic and instagram_business_content_publish.</p><button type="submit">Connect Instagram</button></form>
             <button class="disconnect" data-platform="instagram" type="button" hidden>Disconnect Instagram</button>
           </details>
           <details class="panel"><summary><strong>Temporary storage</strong><span id="storage-status">Not configured</span></summary><p class="help">For Instagram · your S3/R2 bucket</p>
@@ -60,15 +79,22 @@
           <div id="publish-empty" class="empty">Choose Publish on a clip above to prepare your post.</div>
           <form id="publish-form" hidden>
             <div class="composer-grid"><div><div class="video-frame"><video id="publish-preview" controls playsinline preload="metadata" aria-label="Selected clip for publishing"></video></div><p id="publish-selection" class="help"></p></div>
-              <div><h3>Prepare your post</h3><div class="destinations"><label><input id="post-youtube" type="checkbox" checked> YouTube</label><label><input id="post-instagram" type="checkbox"> Instagram</label></div>
-                <div id="youtube-fields"><label for="post-title">YouTube title</label><input id="post-title" maxlength="100"><label for="post-description">YouTube description</label><textarea id="post-description" rows="3" maxlength="5000"></textarea>
+              <div><h3 id="composer-heading">Prepare your post</h3><div class="destinations"><label><input id="post-youtube" type="checkbox" checked> YouTube</label><label><input id="post-instagram" type="checkbox"> Instagram</label></div>
+                <div id="youtube-fields"><div id="single-youtube-fields"><label for="post-title">YouTube title</label><input id="post-title" maxlength="100"><label for="post-description">YouTube description</label><textarea id="post-description" rows="3" maxlength="5000"></textarea></div>
                   <div class="post-options"><div><label for="post-privacy">Visibility</label><select id="post-privacy"><option value="private">Private</option><option value="unlisted">Unlisted</option><option value="public">Public</option></select></div><div><label for="post-audience">Made for kids?</label><select id="post-audience"><option value="">Choose audience…</option><option value="no">No, not made for kids</option><option value="yes">Yes, made for kids</option></select></div></div></div>
-                <div id="instagram-fields" hidden><label for="post-caption">Instagram caption</label><textarea id="post-caption" rows="4" maxlength="2200"></textarea><p class="help">Instagram publishes a Reel immediately, including to your feed.</p></div>
+                <div id="instagram-fields" hidden><div id="single-instagram-fields"><label for="post-caption">Instagram caption</label><textarea id="post-caption" rows="4" maxlength="2200"></textarea></div><p class="help">Instagram publishes a Reel immediately, including to your feed.</p></div>
+                <fieldset id="batch-clip-picker" hidden><legend>Clips to publish</legend><div id="batch-clip-list"></div></fieldset>
                 <button id="review-upload" class="primary" type="submit">Review upload →</button>
               </div></div>
           </form>
         </div>
         <div class="history-heading"><h3>Upload history</h3><span class="help">Saved attempts can be resumed after restarting Clipper.</span></div><div id="upload-history" aria-live="polite"><p class="help">No uploads yet.</p></div>
+      </section>
+      <section class="publishing panel" aria-labelledby="downloads-heading">
+        <h2 id="downloads-heading">Downloaded streams</h2>
+        <p class="help">Remove saved replays to free disk space. Rendered clips and upload history are kept.</p>
+        <p id="download-total"></p><p id="download-error" class="error-text" role="alert" hidden></p>
+        <div id="download-list"></div>
       </section>
       <footer>Clips stay local until you choose Upload now. Review footage and captions before publishing.</footer>
     </main>
@@ -77,7 +103,7 @@
     <article class="clip-card">
       <div class="video-frame"><video controls preload="metadata" playsinline></video></div>
       <div class="clip-info"><div class="clip-title"><h3></h3><span class="duration"></span></div><p class="interval"></p><p class="caption-note"></p>
-        <form class="headline-form"><label>Top headline<input class="headline-input" type="text" maxlength="72" autocomplete="off"></label><p class="help">Leave blank to remove. The original clip is backed up.</p><button class="headline-button" type="submit">Save &amp; re-render</button><p class="headline-error error-text" role="alert" hidden></p></form>
+        <form class="headline-form"><label>Top headline<input class="headline-input" type="text" maxlength="72" autocomplete="off"></label><p class="help">Review the suggested title or write your own. Leave blank to remove. The original clip is backed up.</p><button class="headline-button" type="submit">Save &amp; re-render</button><p class="headline-error error-text" role="alert" hidden></p></form>
         <a class="download" download>Download MP4 <span aria-hidden="true">↓</span></a><button class="publish-clip" type="button">Publish clip →</button></div>
     </article>
   </template>

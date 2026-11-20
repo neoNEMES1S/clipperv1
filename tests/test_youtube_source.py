@@ -102,6 +102,25 @@ class DownloadTests(unittest.TestCase):
         self.assertEqual(download_youtube_video(self.url, self.cache).read_bytes(), b'valid')
         self.assertEqual(self.downloads, 1)
 
+    def test_saved_replay_reused_across_url_forms_without_youtube(self):
+        first = download_youtube_video(self.url, self.cache)
+        self.settings_seen.clear()
+        with patch.dict(sys.modules, {'yt_dlp': None}):
+            for url in [f'https://youtube.com/live/{self.identity}',
+                        f'https://www.youtube.com/watch?v={self.identity}&t=30']:
+                self.assertEqual(download_youtube_video(url, Path(str(self.cache))), first)
+        self.assertEqual(self.settings_seen, [])
+        self.assertEqual(self.downloads, 1)
+
+    def test_corrupt_cache_retained_if_network_is_unavailable(self):
+        target = self.cache / f'{self.identity}.mkv'
+        target.write_bytes(b'corrupt')
+        self.metadata_error = OSError('offline')
+        with self.assertRaisesRegex(RuntimeError, 'offline'):
+            download_youtube_video(self.url, self.cache)
+        self.assertEqual(target.read_bytes(), b'corrupt')
+        self.assertEqual(self.downloads, 0)
+
     def test_unready_replays_rejected(self):
         for status in ['is_live', 'is_upcoming', 'post_live']:
             with self.subTest(status=status):
@@ -156,3 +175,19 @@ class DownloadTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+def test_live_metadata_marks_spikes_and_returns_replay_heatmap():
+    from unittest.mock import patch
+    from youtube_source import replay_signals
+
+    infos = [dict(live_status='is_live', release_timestamp=100, concurrent_view_count=count)
+             for count in (100, 102, 101, 150)]
+    infos.extend([{'live_status': 'post_live'}, {
+        'live_status': 'was_live',
+        'heatmap': [{'start_time': 20, 'end_time': 50, 'value': 1}, {'value': 'bad'}],
+    }])
+    with patch('yt_dlp.YoutubeDL') as downloader, patch('time.sleep'), patch('time.time', side_effect=[160, 220, 280, 340]):
+        downloader.return_value.__enter__.return_value.extract_info.side_effect = infos
+        assert replay_signals('https://youtu.be/Abc123_-xyz', live=True) == [
+            (150, 270, .8, 'live_viewer_spike'), (20, 50, .6, 'most_replayed')]
