@@ -69,3 +69,11 @@ def test_unavailable_local_service_has_setup_message(vision):
     vision[0].open.side_effect = URLError('connection refused')
     with pytest.raises(RuntimeError, match='Start Ollama'):
         clip_titles.title_for_clip(Path('source.mkv'), 0, 36, '', 'fortnite')
+
+
+def test_reel_caption_falls_back_to_saved_speech_or_headline():
+    assert clip_titles.reel_caption('gta6', 'Wow! The streamer explains how to land the plane. '
+                                    'They discuss using the runway.', 'Flying') == (
+        'The streamer explains how to land the plane. They discuss using the runway.\n\n#GTA6 #GamingReels')
+    assert clip_titles.reel_caption('fortnite', '', 'Possible victory') == (
+        'Possible victory\n\n#Fortnite #GamingReels')

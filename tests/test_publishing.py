@@ -67,6 +67,26 @@ def test_review_freezes_bytes_and_retry_keeps_details(publisher):
     assert publisher.commit(retry['review_id'])[0] == [record['id']]
 
 
+def test_retry_all_reviews_only_failed_and_interrupted_reels(publisher):
+    youtube = saved_job(publisher)
+    youtube['status'] = 'failed'
+    publisher.store.save(youtube)
+    retries = set()
+    for status in ('failed', 'interrupted', 'published', 'queued'):
+        (publisher.output / 'test_run' / 'short_01.mp4').write_bytes(status.encode())
+        reel = saved_job(publisher, youtube=False, instagram=True, caption=status)
+        reel['status'] = status
+        publisher.store.save(reel)
+        if status in ('failed', 'interrupted'):
+            retries.add(reel['id'])
+
+    batch = publisher.review_failed_reels()
+    assert batch['retry']
+    assert {clip['meta']['caption'] for clip in batch['clips']} == {'failed', 'interrupted'}
+    assert {clip['destinations'][0]['previous'] for clip in batch['clips']} == retries
+    assert set(publisher.commit(batch['review_id'])[0]) == retries
+
+
 @pytest.mark.parametrize('change', ['file', 'account', 'expiry', 'storage'])
 def test_changed_review_cannot_upload(publisher, change):
     plan = review(publisher, instagram=True)
@@ -240,6 +260,15 @@ def test_vault_rejects_plaintext_and_redacts_provider_errors(tmp_path):
     assert 'secret-token' not in str(error.value)
 
 
+def test_instagram_reports_blocked_access_without_exposing_provider_message():
+    session = Mock()
+    session.request.return_value = response(400, {'error': {
+        'code': 200, 'error_subcode': 5258005, 'message': 'private provider text'}})
+    with pytest.raises(accounts.PublishError, match='Meta blocked Instagram API access') as error:
+        accounts.api_json(session, 'GET', 'https://graph.facebook.com/v27.0/container', 'Instagram')
+    assert 'private provider text' not in str(error.value)
+
+
 def response(status, data=None, **headers):
     result = Mock(status_code=status, headers=headers)
     result.json.return_value = data or {}
@@ -280,6 +309,17 @@ def test_youtube_saved_session_does_not_start_another_upload(publisher):
     with context, pytest.raises(accounts.PublishError, match='expired'):
         uploads.youtube_upload(publisher, record, Mock())
     assert [call.args[0] for call in session.request.call_args_list] == ['PUT']
+
+
+def test_youtube_reports_channel_upload_limit_without_sending_video(publisher):
+    record = saved_job(publisher)
+    session, context = google_context(publisher, [response(400, {'error': {
+        'errors': [{'reason': 'uploadLimitExceeded'}], 'message': 'private provider text'}})])
+    with context, pytest.raises(accounts.PublishError, match='daily YouTube upload limit') as error:
+        uploads.youtube_upload(publisher, record, Mock())
+    assert 'private provider text' not in str(error.value)
+    assert [call.args[0] for call in session.request.call_args_list] == ['POST']
+    assert publisher.vault.get('upload:' + record['id']) is None
 
 
 def test_youtube_rejects_external_session_and_stalled_acknowledgements(publisher):
@@ -419,3 +459,16 @@ def test_batch_preflights_all_clips_and_skips_published_targets(publisher):
     assert len(ids) == 1
     second_record = publisher.store.get(ids[0])
     assert second_record['name'] == second_record['meta']['title'] == 'short_02.mp4'
+
+
+def test_reel_batch_uses_clip_caption_and_keeps_youtube_description(publisher):
+    directory = publisher.output / 'test_run'
+    clip = dict(name='short_01.mp4', start=0, end=36, title='Landing a plane',
+                description='YouTube description', reel_caption='The pilot describes the landing.\n\n#GTA6 #Flying',
+                url='/media/test_run/short_01.mp4')
+    with patch('media.validate_short'):
+        batch = publisher.review_batch('test_run', [clip], directory,
+                                       dict(youtube=True, instagram=True, privacy='private', made_for_kids=False))
+    meta = batch['clips'][0]['meta']
+    assert meta['caption'] == clip['reel_caption']
+    assert meta['description'] == clip['description']

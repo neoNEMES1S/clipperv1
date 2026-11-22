@@ -37,8 +37,9 @@
               <div class="game-field"><label for="game">Game</label><select id="game" name="game" aria-describedby="game-help"><option value="fortnite">Fortnite</option><option value="gta6" selected>GTA 6</option></select></div>
               <div><label for="max-clips">Clip limit</label><input id="max-clips" name="max_clips" type="number" min="1" max="100" step="1" value="25" required aria-describedby="limit-help"><span class="help" id="limit-help">Up to 100</span></div>
             </div>
+            <div id="story-brief-field"><label for="story-brief">Stream brief (optional)</label><input id="story-brief" maxlength="500" placeholder="e.g. How to make money in GTA 6"></div>
             <label class="new-moments"><input id="new-moments" type="checkbox" checked> Skip footage already clipped from this stream</label>
-            <div class="form-bottom"><p class="help" id="game-help">Audio peaks select possible action and reaction moments. Review each clip.</p><button class="primary" id="generate" type="submit">Generate clips <span aria-hidden="true">↗</span></button></div>
+            <div class="form-bottom"><p class="help" id="game-help">Review transcript-led story cuts before rendering.</p><button class="primary" id="generate" type="submit">Generate clips <span aria-hidden="true">↗</span></button></div>
             <p id="form-error" class="error-text" role="alert" hidden></p>
           </form>
         </section>
@@ -51,9 +52,17 @@
         </section>
       </div>
       <section class="results" aria-labelledby="results-heading">
-        <div class="results-heading"><div><span class="eyebrow">YOUR WORKSPACE</span><h2 id="results-heading">Clips, ready to review</h2></div><div class="upload-actions"><button id="publish-all" class="primary" type="button" disabled>Publish all clips →</button><button id="open-folder" type="button" disabled>Open output folder <span aria-hidden="true">↗</span></button></div></div>
-        <div class="run-bar"><div class="run-field"><label for="run-select">Replay / run</label><select id="run-select" disabled><option>No runs yet</option></select></div><div class="run-stat"><span class="label">Clips</span><strong id="clip-count">0</strong></div><div class="run-stat"><span class="label">Selection</span><span id="selection-mode">—</span></div></div>
+        <div class="results-heading"><div><span class="eyebrow">YOUR WORKSPACE</span><h2 id="results-heading">Clip batches</h2></div><div class="upload-actions"><button id="publish-all" class="primary" type="button" disabled>Publish batch →</button><button id="open-folder" type="button" disabled>Open output folder <span aria-hidden="true">↗</span></button></div></div>
+        <div class="run-bar"><div class="run-field"><label for="run-select">Batch by source stream</label><select id="run-select" disabled><option>No batches yet</option></select></div><div class="run-stat"><span class="label">Clips</span><strong id="clip-count">0</strong></div><div class="run-stat"><span class="label">Selection</span><span id="selection-mode">—</span></div></div>
+        <p id="batch-source" class="help" hidden></p>
         <div id="run-notice" class="notice" hidden></div>
+        <form id="story-review" class="panel" hidden>
+          <h3>Review story cuts</h3>
+          <p class="help">Select the stories to render. Adjust the start and end in seconds from the beginning of the stream.</p>
+          <div id="story-cuts"></div>
+          <button id="render-stories" class="primary" type="submit">Render selected stories</button>
+          <p id="story-error" class="error-text" role="alert" hidden></p>
+        </form>
         <p id="empty" class="empty">Your clips will appear here. Paste a replay above to get started.</p>
         <div id="clips" class="clips"></div>
       </section>
@@ -88,7 +97,7 @@
               </div></div>
           </form>
         </div>
-        <div class="history-heading"><h3>Upload history</h3><span class="help">Saved attempts can be resumed after restarting Clipper.</span></div><div id="upload-history" aria-live="polite"><p class="help">No uploads yet.</p></div>
+        <div class="history-heading"><h3>Upload history</h3><span class="help">Saved attempts can be resumed after restarting Clipper.</span><button id="retry-reels" type="button" hidden>Retry all failed Reels</button></div><div id="upload-history" aria-live="polite"><p class="help">No uploads yet.</p></div>
       </section>
       <section class="publishing panel" aria-labelledby="downloads-heading">
         <h2 id="downloads-heading">Downloaded streams</h2>

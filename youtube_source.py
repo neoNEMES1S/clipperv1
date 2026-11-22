@@ -15,6 +15,37 @@ SUPPORTED_HOSTS = {
 VIDEO_SUFFIXES = {'.mkv', '.mp4', '.mov', '.ts', '.webm'}
 
 
+def replay_filename(path: Path) -> re.Match | None:
+    if path.suffix.lower() not in VIDEO_SUFFIXES:
+        return None
+    return re.fullmatch(r'(?P<id>[A-Za-z0-9_-]{11})(?: - (?P<title>.+))?', path.stem)
+
+
+def named_replay(path: Path, identity: str, title: str) -> Path:
+    safe = ' '.join(re.sub(r'[<>:"/\\|?*\x00-\x1f]', ' ', title).split())
+    safe = safe.encode('utf-8')[:140].decode('utf-8', errors='ignore').rstrip(' .')
+    stem = f'{identity} - {safe}' if safe else identity
+    return path.with_name(stem + path.suffix)
+
+
+def replay_source_path(path: Path, cache: Path) -> Path:
+    """Resolve legacy manifest paths after a cached replay receives a title."""
+    if path.is_file() or path.parent.resolve() != cache.resolve():
+        return path
+    original = replay_filename(path)
+    if original:
+        for candidate in sorted(cache.glob(original['id'] + ' - *')):
+            if (candidate.suffix == path.suffix and replay_filename(candidate)
+                    and not candidate.is_symlink() and candidate.is_file()):
+                return candidate
+    return path
+
+
+def replay_cache_key(path: Path) -> Path:
+    match = replay_filename(path) if path.parent.name == '_youtube_downloads' else None
+    return path.with_name(match['id'] + path.suffix) if match else path
+
+
 def youtube_video_id(value: str) -> str:
     """Accept one video identity, never playlist/batch inputs or arbitrary hosts."""
     try:
@@ -62,8 +93,9 @@ def download_youtube_video(url: str, cache_dir: Path) -> Path:
 
     def valid_files(root: Path) -> list[Path]:
         found = []
-        for file in sorted(root.glob(identity + '.*')):
-            if file.stem != identity or file.suffix.lower() not in VIDEO_SUFFIXES:
+        for file in sorted(root.glob(identity + '*')):
+            match = replay_filename(file)
+            if not match or match['id'] != identity or file.is_symlink() or not file.is_file():
                 continue
             try:
                 validate_media(file)
@@ -124,7 +156,8 @@ def download_youtube_video(url: str, cache_dir: Path) -> Path:
         ready = valid_files(staging)
     if not ready:
         raise RuntimeError('Download produced no valid video+audio container. Check FFmpeg, disk space and retry.')
-    target = cache_dir / ready[0].name
+    title = info.get('title')
+    target = named_replay(cache_dir / ready[0].name, identity, title if isinstance(title, str) else '')
     ready[0].replace(target)
     return target
 

@@ -7,7 +7,7 @@ import tempfile
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from youtube_source import download_youtube_video, is_youtube_url, is_web_url
+from youtube_source import download_youtube_video, is_youtube_url, is_web_url, replay_cache_key, replay_source_path
 from media import MissingToolError
 
 class YoutubeUrlTests(unittest.TestCase):
@@ -91,11 +91,21 @@ class DownloadTests(unittest.TestCase):
         patch('youtube_source.validate_media', side_effect=validate).start()
 
     def test_completed_download_then_reuse(self):
+        self.info['title'] = 'How to make money: GTA / Tips?'
         first = download_youtube_video(self.url, self.cache)
+        self.assertEqual(first.name, f'{self.identity} - How to make money GTA Tips.mkv')
         self.assertEqual(first.read_bytes(), b'valid')
         self.assertEqual(download_youtube_video(self.url, self.cache), first)
         self.assertEqual(self.downloads, 1)
         self.assertEqual(self.settings_seen[0]['js_runtimes'], {'deno': {}, 'node': {}})
+
+    def test_legacy_manifest_can_find_a_renamed_download(self):
+        cache = self.cache.resolve() / '_youtube_downloads'
+        self.info['title'] = 'Money tips'
+        named = download_youtube_video(self.url, cache)
+        legacy = cache / f'{self.identity}.mkv'
+        self.assertEqual(replay_source_path(legacy, cache), named)
+        self.assertEqual(replay_cache_key(named), legacy)
 
     def test_corrupt_cache_redownloaded(self):
         (self.cache / f'{self.identity}.mkv').write_bytes(b'corrupt')

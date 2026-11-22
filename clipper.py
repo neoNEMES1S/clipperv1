@@ -21,7 +21,10 @@ from typing import Any
 import numpy as np
 
 from media import logger, probe, run, validate_media, validate_short
-from clip_titles import TITLE_MODEL, title_for_clip
+from clip_titles import TITLE_MODEL, draft_clip, reel_caption, youtube_description
+from edit_clip import normalize_headline
+from story_clips import check_story_frames, overlaps, propose_stories, reviewed_stories
+from youtube_source import replay_cache_key, replay_filename, replay_source_path
 
 VIDEO_SUFFIXES = {'.mkv', '.mp4', '.mov', '.ts', '.webm'}
 # Ranking weights: OCR is secondary; independent audio + HUD evidence earns a bonus.
@@ -351,6 +354,53 @@ def whisper_segments(audio_path: Path, model: Any) -> list[dict[str, Any]]:
     return result
 
 
+def whisper_model(name: str):
+    try:
+        from faster_whisper import WhisperModel
+    except ImportError as exc:
+        raise RuntimeError('Could not load faster-whisper. Install requirements.txt; on Windows, '
+                           f'also install the Microsoft Visual C++ x64 runtime. Details: {exc}') from exc
+    return WhisperModel(name, device='cpu', compute_type='int8')
+
+
+def source_transcript(video, duration, track, model_name, output, work, progress):
+    stat = video.stat()
+    identity = f'1|{replay_cache_key(video)}|{stat.st_size}|{stat.st_mtime_ns}|{track}|{model_name}'
+    directory = output / '_transcripts'
+    cache = directory / (hashlib.sha256(identity.encode()).hexdigest() + '.json')
+    try:
+        segments = json.loads(cache.read_text(encoding='utf-8'))
+        if isinstance(segments, list):
+            progress('transcribe: reusing the saved stream transcript')
+            return segments
+    except (OSError, ValueError):
+        pass
+    model = whisper_model(model_name)
+    wav = work / 'transcript.wav'
+    segments = []
+    for start in range(0, math.ceil(duration), 600):
+        progress(f'transcribe: stream audio at {start // 60} min of {math.ceil(duration / 60)} min')
+        extract_audio(video, wav, track, start, min(600, duration - start))
+        segments.extend({'start': round(start + line['start'], 3), 'end': round(start + line['end'], 3),
+                         'text': line['text']} for line in whisper_segments(wav, model))
+    wav.unlink()
+    directory.mkdir(exist_ok=True)
+    with tempfile.NamedTemporaryFile(mode='w', dir=directory, encoding='utf-8', delete=False) as temporary:
+        try:
+            json.dump(segments, temporary, ensure_ascii=False, allow_nan=False)
+            temporary.close()
+            Path(temporary.name).replace(cache)
+        finally:
+            Path(temporary.name).unlink(missing_ok=True)
+    return segments
+
+
+def cut_transcript(transcript, start, end):
+    return [{'start': round(max(0, line['start'] - start), 3),
+             'end': round(min(end, line['end']) - start, 3), 'text': line['text']}
+            for line in transcript if start <= line['start'] < line['end'] <= end]
+
+
 def caption_chunks(segments: list[dict[str, Any]], words_per_caption: int = 5) -> list[dict[str, Any]]:
     if words_per_caption <= 0:
         raise ValueError('Words per caption must be positive.')
@@ -520,7 +570,8 @@ def process(video: Path, output: Path, mic_track: int = 1, mix_track: int = 0,
             source_url: str | None = None, *, pre_roll: float = 23, post_roll: float = 13,
             min_clip_seconds: float = 8, peak_ratio: float = 1.4,
             peak_spacing: float = 14, combat_only: bool = False,
-            game: str = 'fortnite', auto_title: bool = False, new_moments: bool = False, audience_windows=()) -> dict[str, Any]:
+            game: str = 'fortnite', auto_title: bool = False, new_moments: bool = False, audience_windows=(),
+            story_brief: str | None = None, story_review: tuple[Path, dict, list] | None = None) -> dict[str, Any]:
     if game not in ('fortnite', 'gta6'):
         raise ValueError('Choose Fortnite or GTA 6.')
     if game != 'fortnite' and (combat_only or use_ocr):
@@ -552,13 +603,22 @@ def process(video: Path, output: Path, mic_track: int = 1, mix_track: int = 0,
         config['excluded_windows'] = excluded
     if audience_windows:
         config['audience_windows'] = audience_windows
+    if story_brief is not None:
+        if game != 'gta6' or no_transcribe or dry_run:
+            raise ValueError('Story clipping requires GTA 6 and transcription.')
+        config['story_brief'] = story_brief
+    if story_review:
+        config = story_review[1]['config']
+        excluded = config.get('excluded_windows', ())
     game_name = 'GTA 6' if game == 'gta6' else 'Fortnite'
     game_tag = '#GTA6' if game == 'gta6' else '#Fortnite'
     stat = video.stat()
-    identity = f'{video}|{stat.st_size}|{stat.st_mtime_ns}|{json.dumps(config, sort_keys=True)}'
+    identity = f'{replay_cache_key(video)}|{stat.st_size}|{stat.st_mtime_ns}|{json.dumps(config, sort_keys=True)}'
     signature = hashlib.sha256(identity.encode()).hexdigest()[:12]
     safe_name = re.sub(r'[^\w-]', '_', video_id or video.stem)[:60]
     destination = output / f'{safe_name}_{signature}'
+    if story_review and story_review[0].parent != destination:
+        raise ValueError('The original source changed. Analyze the stream again.')
     destination.mkdir(parents=True, exist_ok=True)
     previous = {}
     manifest = destination / 'manifest.json'
@@ -569,10 +629,18 @@ def process(video: Path, output: Path, mic_track: int = 1, mix_track: int = 0,
             pass
     if not isinstance(previous, dict) or not isinstance(previous.get('shorts', []), list):
         previous = {}
+    if story_review:
+        if previous.get('status') != 'awaiting_story_review':
+            raise ValueError('This batch is no longer waiting for story review.')
+        stories = reviewed_stories(previous['candidates'], story_review[2], previous['duration_seconds'], excluded)
+    elif story_brief is not None and previous.get('status') in ('awaiting_story_review', 'review_required'):
+        print(f'done: {manifest}', flush=True)
+        return previous
+    replay = replay_filename(video) if video_id else None
     report: dict[str, Any] = {
         'schema_version': '1.0', 'status': 'created', 'config': config,
         'source': {'type': 'youtube' if source_url else 'local', 'url': source_url,
-                   'video_id': video_id, 'path': str(video),
+                   'video_id': video_id, 'path': str(video), 'title': replay['title'] if replay else None,
                    'downloaded_source_path': str(video) if source_url else None},
         'source_url': source_url, 'output_directory': str(destination),
         'shorts': [], 'candidates': [], 'events': [], 'warnings': [],
@@ -599,12 +667,32 @@ def process(video: Path, output: Path, mic_track: int = 1, mix_track: int = 0,
                              'For mixed audio use --mic-track 0; local OBS defaults to mic index 1.')
         with tempfile.TemporaryDirectory(prefix='fortnite_clipper_') as temp:
             work = Path(temp)
-            progress(f'analyze: scanning {game_name} audio energy in one-second chunks...')
-            mic_wav = work / 'analysis.wav'
-            extract_audio(video, mic_wav, mic_track)
-            events = microphone_events(energy_per_second(mic_wav), peak_ratio=peak_ratio,
-                                       min_spacing=peak_spacing)
-            mic_wav.unlink()  # Free the full-length PCM file before rendering.
+            transcript = None
+            events = []
+            if story_brief is not None:
+                transcript = source_transcript(video, duration, mic_track, model_name, output, work, progress)
+                if not story_review:
+                    try:
+                        stories = propose_stories(transcript, duration, story_brief, max_shorts, excluded, progress)
+                    except (OSError, ValueError, RuntimeError) as exc:
+                        if story_brief:
+                            raise
+                        stories = []
+                        report['warnings'].append(f'Transcript story analysis unavailable: {exc}')
+                    for story in stories:
+                        other_windows = [(other['start'], other['end']) for other in stories if other is not story]
+                        try:
+                            check_story_frames(video, story, duration, [*excluded, *other_windows])
+                        except (OSError, ValueError, RuntimeError):
+                            report['warnings'].append('Some story boundaries could not be checked against gameplay frames.')
+                            break
+            if story_brief is None or (not story_review and not stories and not story_brief):
+                progress(f'analyze: scanning {game_name} audio energy in one-second chunks...')
+                mic_wav = work / 'analysis.wav'
+                extract_audio(video, mic_wav, mic_track)
+                events = microphone_events(energy_per_second(mic_wav), peak_ratio=peak_ratio,
+                                           min_spacing=peak_spacing)
+                mic_wav.unlink()
             if combat_only:
                 progress('analyze: scanning personal elimination counter (combat-only)...')
                 scan_root = output / '_combat_scans'
@@ -629,6 +717,19 @@ def process(video: Path, output: Path, mic_track: int = 1, mix_track: int = 0,
                                         evidence=[e.metadata() for e in events
                                                   if c.start <= e.time <= c.end and abs(e.time - c.anchor) <= 10])
                                     for c in clips]
+            if story_brief is not None:
+                if not story_review:
+                    report['candidates'] = stories or [
+                        {'start': c.start, 'end': c.end, 'summary': 'Gameplay or reaction near an audio peak',
+                         'start_reason': 'Lead-in to the audio peak.', 'end_reason': 'Audio-based end estimate.',
+                         'complete': False} for c in clips]
+                    report['status'] = 'awaiting_story_review' if report['candidates'] else 'no_stories'
+                    save_report(destination, report)
+                    progress(f'done: {manifest}')
+                    return report
+                report['candidates'] = stories
+                clips = [Clip(s['start'], s['end'], s.get('relevance', 0), ['story_review'], s['start'])
+                         for s in stories]
             progress(f'select: {len(events)} events; {len(clips)} distinct candidate(s).')
             if not clips:
                 message = ('No new qualifying moments outside previously clipped footage.' if excluded
@@ -649,7 +750,7 @@ def process(video: Path, output: Path, mic_track: int = 1, mix_track: int = 0,
                 meta = {'id': name, 'filename': f'{name}.mp4', 'path': f'{name}.mp4',
                         'headline': title,
                         'title': f'{title} {game_tag} #Shorts',
-                        'description': f'Candidate moment from a {game_name} stream. Review before posting.\n{game_tag} #Shorts #Gaming',
+                        'description': '',
                         'start_seconds': clip.start, 'end_seconds': clip.end, 'score': clip.score,
                         'signals': clip.signals, 'transcript': '', 'captions': [], 'status': 'created'}
                 report['shorts'].append(meta)
@@ -664,22 +765,23 @@ def process(video: Path, output: Path, mic_track: int = 1, mix_track: int = 0,
                     else:
                         for key in ('title', 'headline', 'description', 'transcript', 'captions'):
                             meta[key] = prior.get(key, meta[key])
+                        meta['reel_caption'] = prior.get('reel_caption') or reel_caption(
+                            game, meta['transcript'], meta['headline'])
+                        meta['description'] = youtube_description(meta['description'], meta['reel_caption'])
                         meta['status'] = 'review_required'
                         report['warnings'].extend(w for w in previous.get('warnings', [])
                                                   if isinstance(w, str) and w.startswith(f'{name}:'))
                         progress(f'render: reusing validated {name}.mp4')
                         save_report(destination, report)
                         continue
-                if not no_transcribe:
+                if transcript is not None:
+                    segments = cut_transcript(transcript, clip.start, clip.end)
+                    meta['transcript'] = ' '.join(s['text'] for s in segments)
+                    meta['captions'] = caption_chunks(segments)
+                elif not no_transcribe:
                     progress(f'transcribe: {name}, local Whisper {model_name}...')
                     if model is None:
-                        try:
-                            from faster_whisper import WhisperModel
-                        except ImportError as exc:
-                            raise RuntimeError('Could not load faster-whisper. Install requirements.txt; on Windows, '
-                                               'also install the Microsoft Visual C++ x64 runtime. '
-                                               f'Details: {exc}') from exc
-                        model = WhisperModel(model_name, device='cpu', compute_type='int8')
+                        model = whisper_model(model_name)
                     speech_wav = work / f'{name}.wav'
                     extract_audio(video, speech_wav, mic_track, clip.start, clip.end - clip.start)
                     segments = whisper_segments(speech_wav, model)
@@ -692,11 +794,15 @@ def process(video: Path, output: Path, mic_track: int = 1, mix_track: int = 0,
                     speech_wav.unlink()
                 else:
                     progress(f'transcribe: skipped for {name} (--no-transcribe).')
+                draft = None
                 if auto_title:
                     progress(f'title: {name}, reading clip frames with local {TITLE_MODEL}...')
                     try:
-                        title = title_for_clip(video, clip.start, clip.end - clip.start,
-                                               meta['transcript'], game)
+                        suggested_title, draft = draft_clip(video, clip.start, clip.end - clip.start,
+                                                           meta['transcript'], game)
+                        if not suggested_title:
+                            raise ValueError('Local vision could not identify a clear action.')
+                        title = normalize_headline(suggested_title)
                     except (OSError, ValueError, RuntimeError) as exc:
                         warning = f'{name}: automatic title unavailable; kept generic headline. {exc}'
                         report['warnings'].append(warning)
@@ -705,6 +811,8 @@ def process(video: Path, output: Path, mic_track: int = 1, mix_track: int = 0,
                         meta['headline'] = title
                         meta['title'] = f'{title} {game_tag} #Shorts'
                         progress(f'title: {name}: {title}')
+                meta['reel_caption'] = reel_caption(game, meta['transcript'], meta['headline'], draft)
+                meta['description'] = youtube_description(meta['description'], meta['reel_caption'])
                 save_report(destination, report)
                 render_dir = work / name
                 render_dir.mkdir()
@@ -726,6 +834,8 @@ def process(video: Path, output: Path, mic_track: int = 1, mix_track: int = 0,
                 short['status'], short['error'] = 'failed', str(exc)
         logger.exception('Processing failed; source retained')
         try:
+            if story_review:
+                report = previous | {'error': report['error']}
             save_report(destination, report)
         except OSError:
             logger.exception('Could not write failure metadata; check free space and permissions')
@@ -737,7 +847,9 @@ def process(video: Path, output: Path, mic_track: int = 1, mix_track: int = 0,
 
 def main() -> None:
     parser = argparse.ArgumentParser(description='Create vertical Shorts from a completed YouTube livestream or OBS recording')
-    parser.add_argument('--input', type=str, required=True, help='Local recording path OR ended YouTube livestream replay URL')
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument('--input', type=str, help='Local recording path OR ended YouTube livestream replay URL')
+    source.add_argument('--story-render', type=Path, help='Manifest of a GTA 6 batch awaiting story review')
     parser.add_argument('--output', type=Path, required=True, help='Directory for generated Shorts')
     parser.add_argument('--mic-track', type=int, default=None, help='Zero-based audio stream index; default=1 for OBS, 0 for YouTube combined audio')
     parser.add_argument('--mix-track', type=int, default=0, help='Zero-based mixed audio stream index; OBS Track 1 = 0')
@@ -745,6 +857,8 @@ def main() -> None:
     parser.add_argument('--model', default='base', help='Whisper model name (base/small) or local CTranslate2 model directory')
     parser.add_argument('--game', choices=('fortnite', 'gta6'), default='fortnite',
                         help='Game label; GTA 6 uses audio-peak selection')
+    parser.add_argument('--story-brief', help='Analyze GTA 6 stories for review, optionally guided by this topic')
+    parser.add_argument('--story-cuts', help='JSON array of reviewed story indices and time ranges')
     parser.add_argument('--auto-title', action='store_true',
                         help=f'Draft titles from clip frames and transcript using local Ollama {TITLE_MODEL}')
     parser.add_argument('--ocr', action='store_true', help='Enable optional Fortnite HUD OCR')
@@ -771,10 +885,15 @@ def main() -> None:
             raise ValueError('--model must not be empty.')
         if args.game != 'fortnite' and (args.combat_only or args.ocr):
             raise ValueError('--combat-only and --ocr require --game fortnite; GTA 6 uses audio peaks.')
-        if args.live and not is_web_url(args.input):
+        if args.live and (not args.input or not is_web_url(args.input)):
             raise ValueError('Live mode requires a YouTube stream URL.')
-        if is_web_url(args.input):
+        if args.input and is_web_url(args.input):
             youtube_video_id(args.input)
+        if (args.story_brief is not None and (args.game != 'gta6' or args.no_transcribe or args.dry_run
+                                            or args.delete_download or len(args.story_brief) > 500)):
+            raise ValueError('Story review requires GTA 6, transcription and retained source footage. The brief limit is 500 characters.')
+        if bool(args.story_render) != (args.story_cuts is not None):
+            raise ValueError('--story-render and --story-cuts are required together.')
     except ValueError as exc:
         parser.error(str(exc))
     args.output = args.output.expanduser()
@@ -787,6 +906,20 @@ def main() -> None:
     logger.setLevel(logging.INFO)
     logger.addHandler(handler)
     try:
+        if args.story_render:
+            manifest = args.story_render.resolve()
+            if manifest.name != 'manifest.json' or manifest.parent.parent != args.output.resolve():
+                raise ValueError('Select a story batch inside the output directory.')
+            report = json.loads(manifest.read_text(encoding='utf-8'))
+            config = report.get('config', {})
+            if report.get('status') != 'awaiting_story_review' or 'story_brief' not in config:
+                raise ValueError('Select a GTA 6 batch awaiting review.')
+            video = replay_source_path(Path(report['source']['path']), args.output / '_youtube_downloads')
+            process(video, args.output, config['mic_track'], config['mix_track'],
+                    config['max_shorts'], config['whisper_model'], source_url=report['source']['url'],
+                    game='gta6', auto_title=bool(config.get('title_model')), story_brief=config['story_brief'],
+                    story_review=(manifest, report, json.loads(args.story_cuts)))
+            return
         source_url = args.input if is_web_url(args.input) else None
         audience_windows = []
         if source_url:
@@ -809,7 +942,8 @@ def main() -> None:
                 source_url=source_url, pre_roll=args.pre_roll, post_roll=args.post_roll,
                 min_clip_seconds=args.min_clip_seconds, peak_ratio=args.peak_ratio,
                 peak_spacing=args.peak_spacing, combat_only=args.combat_only, game=args.game,
-                auto_title=args.auto_title, new_moments=args.new_moments, audience_windows=audience_windows)
+                auto_title=args.auto_title, new_moments=args.new_moments, audience_windows=audience_windows,
+                **({'story_brief': args.story_brief} if args.story_brief is not None else {}))
         if source_url and args.delete_download and not args.dry_run:
             local_input.unlink()
             print(f'Deleted downloaded video: {local_input}')

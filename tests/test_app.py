@@ -68,6 +68,34 @@ def test_state_and_bundled_page(server):
             assert response.status == 200
 
 
+def test_state_supplies_post_drafts_for_older_clips(server, workspace):
+    manifest = next(workspace.output.glob('*/manifest.json'))
+    run = json.loads(manifest.read_text())
+    clip = run['shorts'][0]
+    clip.update(description='Candidate moment from a Fortnite stream. Review before posting.\n#Fortnite #Shorts #Gaming',
+                transcript='The squad talks about finding cover.')
+    manifest.write_text(json.dumps(run))
+    with fetch(server + '/api/state') as response:
+        draft = json.load(response)['runs'][0]['clips'][0]
+    assert draft['reel_caption'] == 'The squad talks about finding cover.\n\n#Fortnite #GamingReels'
+    assert draft['description'] == draft['reel_caption'] + ' #Shorts'
+
+
+def test_state_keeps_separate_batches_for_the_same_stream(server, workspace):
+    manifest = next(workspace.output.glob('*/manifest.json'))
+    second = workspace.output / 'second_batch'
+    second.mkdir()
+    (second / 'short_01.mp4').write_bytes(b'second batch')
+    data = json.loads(manifest.read_text())
+    data['source'].pop('video_id')
+    (second / 'manifest.json').write_text(json.dumps(data))
+    with fetch(server + '/api/state') as response:
+        batches = json.load(response)['runs']
+    assert {batch['id'] for batch in batches} == {manifest.parent.name, second.name}
+    assert {batch['source_id'] for batch in batches} == {'Abc123_-xyz'}
+    assert all(batch['batch_date'] > 0 and len(batch['clips']) == 1 for batch in batches)
+
+
 @pytest.mark.parametrize('headers', [
     {'Host': 'evil.example'}, {'Origin': 'https://evil.example'},
 ])
@@ -83,7 +111,7 @@ def test_start_requires_token_and_valid_options(server, workspace):
         start.assert_not_called()
         with post(server, '/api/start', {'url': 'https://youtu.be/Abc123_-xyz', 'max_clips': 25}, workspace.token) as response:
             assert response.status == 202
-        start.assert_called_once_with('https://youtu.be/Abc123_-xyz', 25, 'fortnite', False, 'replay')
+        start.assert_called_once_with('https://youtu.be/Abc123_-xyz', 25, 'fortnite', False, 'replay', '')
 
 
 @pytest.mark.parametrize('url,maximum', [
@@ -115,20 +143,42 @@ def test_start_preserves_pipeline_defaults_and_blocks_parallel_jobs(workspace):
         assert popen.call_count == 1
 
 
-def test_gta6_endpoint_uses_audio_selection_without_fortnite_ocr(server, workspace):
+def test_gta6_endpoint_uses_story_selection_without_fortnite_ocr(server, workspace):
     workspace.combat_missing = ['rapidocr_onnxruntime']
     with patch('app.subprocess.Popen') as popen, patch.object(workspace, 'collect'):
         with post(server, '/api/start', {'url': 'https://youtu.be/Abc123_-xyz',
-                                       'max_clips': 10, 'game': 'gta6'}, workspace.token) as response:
+                                       'max_clips': 10, 'game': 'gta6', 'story_brief': 'Make money'}, workspace.token) as response:
             assert response.status == 202
         command = popen.call_args.args[0]
         assert command[command.index('--game') + 1] == 'gta6'
         assert '--combat-only' not in command
         assert '--ocr' not in command
         assert '--auto-title' in command
+        assert '--story-brief=Make money' in command
         assert '--delete-download' not in command
         assert workspace.job['game'] == 'gta6'
         assert any('GTA 6' in line for line in workspace.lines)
+
+
+def test_story_render_rejects_stale_reviews_and_out_of_bounds_cuts(server, workspace):
+    manifest = next(workspace.output.glob('*/manifest.json'))
+    data = json.loads(manifest.read_text())
+    data.update(status='awaiting_story_review', candidates=[{'start': 10, 'end': 90}], duration_seconds=100)
+    manifest.write_text(json.dumps(data))
+    run = workspace.read_run(manifest.parent.name)
+    request = {'run': run['id'], 'revision': 'old', 'cuts': [{'index': 0, 'start': 8, 'end': 95}]}
+    with patch.object(workspace, 'launch') as launch:
+        with post(server, '/api/story-render', request, workspace.token) as response:
+            assert response.status == 400
+        request['revision'] = run['revision']
+        with post(server, '/api/story-render', request | {'cuts': [{'index': 0, 'start': 0, 'end': 101}]},
+                  workspace.token) as response:
+            assert response.status == 400
+        launch.assert_not_called()
+        with post(server, '/api/story-render', request, workspace.token) as response:
+            assert response.status == 202
+        command = launch.call_args.args[0]
+        assert json.loads(command[command.index('--story-cuts') + 1]) == request['cuts']
 
 
 @pytest.mark.parametrize('game', ['unknown', None, [], {}])
@@ -227,12 +277,28 @@ def test_download_and_head(server, workspace):
         assert response.headers['Content-Length'] == '256'
 
 
+def test_clip_poster_is_cached_until_the_render_changes(server, workspace):
+    run = workspace.runs()[0]
+    clip = run['clips'][0]
+    with patch('app.subprocess.run', return_value=Mock(returncode=0, stdout=b'\xff\xd8frame')) as ffmpeg:
+        for _ in range(2):
+            with fetch(server + clip['poster']) as response:
+                assert response.headers['Content-Type'] == 'image/jpeg'
+                assert response.read() == b'\xff\xd8frame'
+        assert ffmpeg.call_count == 1
+        (workspace.output / run['id'] / clip['name']).write_bytes(b'new render')
+        with fetch(server + clip['poster']) as response:
+            assert response.status == 200
+        assert ffmpeg.call_count == 2
+
+
 def test_only_manifest_listed_completed_clips_are_served(server, workspace):
     run = workspace.runs()[0]
     directory = workspace.output / run['id']
     (directory / 'short_02.mp4').write_bytes(b'not completed')
     for path in ('/media/../app.py', '/media/%2e%2e/app.py',
-                 f'/media/{run["id"]}/manifest.json', f'/media/{run["id"]}/short_02.mp4', '/app.py'):
+                 f'/media/{run["id"]}/manifest.json', f'/media/{run["id"]}/short_02.mp4',
+                 f'/poster/{run["id"]}/short_02.mp4', '/poster/%2e%2e/app.py', '/app.py'):
         with fetch(server + path) as response:
             assert response.status == 404
 
@@ -314,11 +380,12 @@ def test_oauth_callback_strips_code_and_reports_connection_error(server, workspa
 def test_removing_download_is_limited_to_listed_cache_files(workspace):
     cache = workspace.output / '_youtube_downloads'
     cache.mkdir()
-    replay = cache / 'Abc123_-xyz.mkv'
+    replay = cache / 'Abc123_-xyz - GTA 6 Money Tips.mkv'
     replay.write_bytes(b'replay')
     clip = next(workspace.output.glob('*/short_01.mp4'))
     (cache / 'Def123_-xyz.mkv').symlink_to(clip)
     entry, = workspace.downloads()
+    assert (entry['source_id'], entry['title']) == ('Abc123_-xyz', 'GTA 6 Money Tips')
     with pytest.raises(ValueError):
         workspace.delete_download('../' + clip.name, entry['modified'])
     workspace.job['status'] = 'running'

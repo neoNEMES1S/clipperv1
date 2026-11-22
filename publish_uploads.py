@@ -44,6 +44,14 @@ def youtube_upload(publisher, record: dict, save) -> None:
         except Exception:
             raise PublishError('Could not start the YouTube upload. No video bytes were sent; retry this attempt.') from None
         if response.status_code not in (200, 201):
+            try:
+                reasons = [error['reason'] for error in response.json()['error']['errors']]
+            except (ValueError, TypeError, KeyError):
+                reasons = []
+            if 'uploadLimitExceeded' in reasons:
+                raise PublishError('This channel reached its daily YouTube upload limit. Resume after the limit resets.')
+            if 'quotaExceeded' in reasons or 'dailyLimitExceeded' in reasons:
+                raise PublishError('The YouTube API project reached its quota. Resume after the quota resets.')
             raise PublishError(f'YouTube rejected upload setup (HTTP {response.status_code}). Check permissions and posting details.')
         uri = google_upload_url(response.headers.get('Location', ''))
         publisher.vault.put(key, {'uri': uri})

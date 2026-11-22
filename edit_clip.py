@@ -22,6 +22,7 @@ def normalize_headline(text: str) -> str:
 
 def edit_headline(output: Path, run: str, name: str, text: str) -> None:
     from clipper import make_ass, render_short, save_report
+    from youtube_source import replay_source_path
 
     headline = normalize_headline(text)
     output = output.resolve()
@@ -42,7 +43,7 @@ def edit_headline(output: Path, run: str, name: str, text: str) -> None:
     backup = directory / (Path(name).stem + '.original.mp4')
     if target.parent != directory or backup.resolve().parent != directory or not target.is_file():
         raise ValueError('Invalid clip file.')
-    source = Path(report['source']['path']).resolve()
+    source = replay_source_path(Path(report['source']['path']), output / '_youtube_downloads').resolve()
     if not source.is_file():
         raise ValueError('The original replay is missing. Restore it before editing the headline.')
     start, end = float(clip['start_seconds']), float(clip['end_seconds'])

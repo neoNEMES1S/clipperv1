@@ -91,7 +91,7 @@ class Store:
                      visibility=record['data'].get('visibility'),
                      cleanup_pending=bool(record['data'].get('object_key')),
                      account_link=bool(record['data'].get('account_link')))
-                for record in records[:200]]
+                for record in records]
 
 
 def posting_details(data: dict) -> tuple[list[str], dict]:
@@ -147,7 +147,7 @@ class Publisher:
             try:
                 plans.append(self.plan(run, clip, directory / clip['name'], dict(
                     data, title=clip['title'], description=clip['description'],
-                    caption=clip['description'] or clip['title'])))
+                    caption=clip.get('reel_caption') or clip['description'] or clip['title'])))
             except (ValueError, RuntimeError) as exc:
                 raise ValueError(f"{clip['name']}: {exc}") from exc
         return self.save_review(plans) | {'clips': [self.describe(plan) for plan in plans]}
@@ -189,6 +189,17 @@ class Publisher:
         return plan
 
     def review_retry(self, identifier: str) -> dict:
+        plan = self.retry_plan(identifier)
+        return self.save_review([plan]) | self.describe(plan)
+
+    def review_failed_reels(self) -> dict:
+        plans = [self.retry_plan(item['id']) for item in self.store.history()
+                 if item['target'] == 'instagram' and item['status'] in ('failed', 'interrupted')]
+        if not plans:
+            raise ValueError('No failed Reels to retry.')
+        return self.save_review(plans) | {'clips': [self.describe(plan) for plan in plans], 'retry': True}
+
+    def retry_plan(self, identifier: str) -> dict:
         record = self.store.get(identifier)
         connections = self.store.connections()
         account = connections.get(record['target'], {})
@@ -202,7 +213,7 @@ class Publisher:
                              'previous': record['id'], 'status': record['status'], 'url': record['data'].get('url')}],
                 'storage': record.get('storage'), 'created': time.time(), 'retry': True}
         plan['preview'] = '/publish-media/' + identifier
-        return self.save_review([plan]) | self.describe(plan)
+        return plan
 
     def save_review(self, plans: list[dict]) -> dict:
         key = secrets.token_urlsafe(32)

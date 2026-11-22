@@ -85,6 +85,15 @@ def api_json(session, method: str, url: str, service: str, **kwargs) -> dict:
         raise PublishError(f'Could not reach {service}. Check the connection and retry.') from None
     if not 200 <= response.status_code < 300:
         # Provider errors can echo tokens, signed URLs or complete request URLs.
+        if service == 'Instagram':
+            try:
+                error = response.json()['error']
+                blocked = error['code'] == 200 and error['error_subcode'] == 5258005
+            except (ValueError, TypeError, KeyError):
+                blocked = False
+            if blocked:
+                raise PublishError('Meta blocked Instagram API access. Restore access for the connected app '
+                                   'and account in Meta, then resume this attempt.')
         raise PublishError(f'{service} rejected the request (HTTP {response.status_code}). '
                            'Check the account, permissions and upload details.')
     try:

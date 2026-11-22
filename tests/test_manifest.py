@@ -186,7 +186,7 @@ def test_gta6_uses_audio_and_game_specific_posting_text(job, monkeypatch):
         assert short['signals'] == ['mic_reaction']
         assert short['headline'] == 'GTA 6 STREAM MOMENT'
         assert '#GTA6' in short['title']
-        assert 'GTA 6 stream' in short['description']
+        assert short['description'] == 'GTA 6 STREAM MOMENT\n\n#GTA6 #GamingReels #Shorts'
         assert 'Fortnite' not in short['title'] + short['description']
     combat.assert_not_called()
 
@@ -207,8 +207,9 @@ def test_zero_combat_candidates_explain_game_selection(job, monkeypatch, capsys)
 
 def test_automatic_title_uses_transcript_and_reaches_video_and_posting(job, monkeypatch):
     title = 'Flying a plane in GTA 6'
-    vision = Mock(return_value=title)
-    monkeypatch.setattr(clipper, 'title_for_clip', vision)
+    vision = Mock(return_value=(title, {'summary': 'The streamer spots a plane and takes it for a flight.',
+                                        'hashtags': ['#Flying', '#gta6', '#FYP', '#bad tag']}))
+    monkeypatch.setattr(clipper, 'draft_clip', vision)
     monkeypatch.setattr(clipper, 'whisper_segments', Mock(return_value=[
         {'start': 0, 'end': 1, 'text': 'Look at this plane!'}]))
     overlay = Mock(wraps=clipper.make_ass)
@@ -217,6 +218,8 @@ def test_automatic_title_uses_transcript_and_reaches_video_and_posting(job, monk
     short = report['shorts'][0]
     assert short['headline'] == title
     assert short['title'] == f'{title} #GTA6 #Shorts'
+    assert short['reel_caption'] == 'The streamer spots a plane and takes it for a flight.\n\n#GTA6 #Flying'
+    assert short['description'] == short['reel_caption'] + ' #Shorts'
     assert report['config']['title_model'] == clipper.TITLE_MODEL
     assert vision.call_args.args[3:] == ('Look at this plane!', 'gta6')
     assert overlay.call_args.args[1] == title
@@ -225,12 +228,13 @@ def test_automatic_title_uses_transcript_and_reaches_video_and_posting(job, monk
     manifest.write_text(json.dumps(report))
     again = clipper.process(job[0], job[1], mic_track=0, max_shorts=1, game='gta6', auto_title=True)
     assert again['shorts'][0]['headline'] == 'My own title'
+    assert again['shorts'][0]['reel_caption'] == short['reel_caption']
     assert vision.call_count == 1
     assert job[2].call_count == 1
 
 
 def test_title_failure_keeps_generic_title_and_renders(job, monkeypatch):
-    monkeypatch.setattr(clipper, 'title_for_clip', Mock(side_effect=RuntimeError('Ollama unavailable')))
+    monkeypatch.setattr(clipper, 'draft_clip', Mock(side_effect=RuntimeError('Ollama unavailable')))
     report = run_job(job, game='gta6', auto_title=True, max_shorts=1)
     assert report['status'] == 'review_required'
     assert report['shorts'][0]['headline'] == 'GTA 6 STREAM MOMENT'
@@ -240,6 +244,31 @@ def test_title_failure_keeps_generic_title_and_renders(job, monkeypatch):
 
 def test_dry_run_never_calls_vision_model(job, monkeypatch):
     vision = Mock()
-    monkeypatch.setattr(clipper, 'title_for_clip', vision)
+    monkeypatch.setattr(clipper, 'draft_clip', vision)
     run_job(job, game='gta6', auto_title=True, dry_run=True)
     vision.assert_not_called()
+
+
+def test_story_review_caches_transcript_and_renders_only_adjusted_cuts(job, monkeypatch):
+    transcript = Mock(return_value=[{'start': 15, 'end': 25, 'text': 'Here is the method.'},
+                                   {'start': 70, 'end': 83, 'text': 'Here is the payout.'}])
+    monkeypatch.setattr(clipper, 'whisper_segments', transcript)
+    proposal = {'start': 13, 'end': 86, 'summary': 'Delivery payout', 'complete': True,
+                'start_reason': 'Introduces the method.', 'end_reason': 'Shows the result.'}
+    planner = Mock(return_value=[proposal])
+    monkeypatch.setattr(clipper, 'propose_stories', planner)
+    monkeypatch.setattr(clipper, 'check_story_frames', Mock())
+    analyzed = clipper.process(job[0], job[1], mic_track=0, game='gta6', story_brief='Make money')
+    assert analyzed['status'] == 'awaiting_story_review'
+    assert analyzed['candidates'] == [proposal]
+    assert planner.call_args.args[2] == 'Make money'
+    job[2].assert_not_called()
+    manifest = clipper.Path(analyzed['output_directory']) / 'manifest.json'
+    rendered = clipper.process(job[0], job[1], mic_track=0, game='gta6', story_brief='Make money',
+                               story_review=(manifest, analyzed, [{'index': 0, 'start': 10, 'end': 90}]))
+    short, = rendered['shorts']
+    assert (short['start_seconds'], short['end_seconds']) == (10, 90)
+    assert short['transcript'] == 'Here is the method. Here is the payout.'
+    assert short['captions'][0]['start'] == 5
+    assert rendered['output_directory'] == analyzed['output_directory']
+    assert transcript.call_count == planner.call_count == job[2].call_count == 1

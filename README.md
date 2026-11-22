@@ -8,27 +8,29 @@ This is an explainable candidate finder, not a kill detector or a guarantee of e
 
 After the one-time Python/FFmpeg setup below, double-click **Start Clipper.command** on Mac or **Start Clipper.bat** on Windows. On this Mac, the existing environment, small model, and local FFmpeg tools are already prepared. The launcher opens **http://127.0.0.1:8765** in your browser.
 
-1. Choose **Fortnite** or **GTA 6**, then paste a completed YouTube replay URL. Fortnite requires confirmed elimination-counter events; GTA 6 selects audio peaks that may capture action or reactions.
-2. Choose a clip limit (1–100, default 25), then click **Generate clips**. The limit is a ceiling; only qualifying, distinct moments are selected for the chosen game.
-3. Follow the real processing stages, then play/download clips or open their output folder. Use the run selector to revisit earlier results. Older audio-only runs are labelled separately.
+1. Choose **Fortnite** or **GTA 6**, then paste a completed YouTube replay URL. For GTA 6, optionally enter a **Stream brief**, such as “How to make money in GTA 6.”
+2. Choose a clip limit (1–100, default 25). In GTA 6 mode, click **Find story cuts**. Select the proposed stories you want, adjust the source times if needed, then click **Render selected stories**. Fortnite still renders confirmed eliminations directly.
+3. Play or download the rendered clips, or open their output folder. Use **Clip batches** to return to earlier results.
+
+When revisiting an older highlight to include more context, clear **Skip footage already clipped from this stream** before starting a new analysis.
 
 The dashboard initially selects GTA 6 and remembers your game choice in this browser. Check the Game field before generating: Fortnite mode requires a confirmed elimination counter and can reject GTA footage even when audio peaks exist. Progress logs identify the game being processed. The CLI continues to default to Fortnite; pass `--game gta6` for GTA footage.
 
 To change the text at the top of an existing Short, edit **Top headline** underneath its preview and click **Save & re-render**. Leave it blank to remove the headline. Use up to 72 characters that fit within three short lines. Only that clip is rendered again from the retained original replay; timing, mixed audio and saved speech captions are preserved. The preview/download refreshes after completion. The first edit saves `short_01.original.mp4` (and equivalent names) beside the clip as a permanent original backup. Re-running the same processing job retains the edited headline. This editor changes the top headline; it does not edit the speech transcript.
 
-Keep the launcher/terminal window open while processing. Closing the browser tab does not stop a job; reopening the page reconnects to it. Press Ctrl+C in the launcher to stop the server and active processing. Completed clips and source downloads are retained. One job runs at a time; the dashboard uses the small multilingual Whisper model and 28 seconds before / 8 seconds after each event. Fortnite uses combat-only selection; GTA 6 uses audio-peak selection.
+Keep the launcher/terminal window open while processing. Closing the browser tab does not stop a job. Press Ctrl+C in the launcher to stop the server and active processing. Completed clips and source downloads are retained. The first GTA 6 analysis transcribes the full stream with the small multilingual Whisper model and saves the timestamped transcript in `shorts/_transcripts/`. Revisiting the same source can reuse that transcript.
 
 Saved replays are remembered on disk in `shorts/_youtube_downloads/` by YouTube video ID. After restarting Clipper, paste the same stream URL and click **Generate clips**: a valid saved replay is reused before any YouTube request, then analysis and clip generation continue. Watch, live-replay and shortened URLs for the same video share that file, across both games. Progress reports when the download is skipped. Keep this folder to retain your streams; missing or invalid media is downloaded again. An identical run reuses validated completed clips and preserves edited headlines.
 
-GTA 6 mode uses the existing loudness detector, rather than a game-specific HUD or mission detector. Loud conversation, music and effects can all trigger it; review the drafts. GTA clips retain GTA 6 titles/tags in history, headline edits and publishing. The dashboard does not need Fortnite OCR dependencies for GTA mode.
+GTA 6 story analysis uses the local Ollama model to find setup, key steps, and a result in the transcript. It checks sampled gameplay frames near each suggested boundary. Review stories with an unconfirmed ending before rendering. Without a brief, audio peaks are available as an explicitly labeled fallback if no transcript stories are found. GTA 6 mode requires no Fortnite OCR dependencies.
 
 For GTA 6 from the Mac/Linux CLI:
 
 ```sh
-.venv/bin/python clipper.py --input "https://youtu.be/YOUR_VIDEO_ID" --output shorts --game gta6 --model small --max-shorts 25 --pre-roll 28 --post-roll 8
+.venv/bin/python clipper.py --input "https://youtu.be/YOUR_VIDEO_ID" --output shorts --game gta6 --model small --auto-title --story-brief "How to make money in GTA 6"
 ```
 
-On Windows use `.\.venv\Scripts\python.exe`. `--game fortnite` is the CLI default, preserving the existing audio-led CLI workflow unless `--combat-only` is supplied. `--combat-only` and `--ocr` are Fortnite-only options.
+Review and render the proposed batch from the dashboard. On Windows use `.\.venv\Scripts\python.exe`. The CLI still defaults to Fortnite. For the previous audio-led GTA 6 mode, omit `--story-brief`. `--combat-only` and `--ocr` are Fortnite-only options.
 
 The interface uses the Python standard library and local HTML/CSS/JS, with no Node build, frontend packages, remote fonts or CDNs. It binds only to loopback and serves completed clips from the output manifests. History survives restarts; live progress is held in memory, while detailed pipeline logs remain in the output folders. It is a local desktop utility, not a remotely hosted service.
 

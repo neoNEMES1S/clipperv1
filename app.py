@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 from collections import deque
+from functools import lru_cache
 import importlib.util
 import json
 import math
@@ -19,12 +20,15 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlsplit
 import webbrowser
 
-from youtube_source import VIDEO_SUFFIXES, youtube_video_id
+from youtube_source import replay_filename, replay_source_path, youtube_video_id
+from clip_titles import reel_caption, youtube_description
 from publishing import Publisher
 from publish_accounts import PublishError, publishing_setup
+from story_clips import reviewed_stories
 
 ROOT = Path(__file__).resolve().parent
 ASSETS = ROOT / 'web'
+POSTER_WORKERS = threading.BoundedSemaphore(2)
 
 
 def pipeline_environment() -> dict[str, str]:
@@ -33,6 +37,18 @@ def pipeline_environment() -> dict[str, str]:
                                   '/opt/homebrew/bin', '/usr/local/bin', env.get('PATH', '')])
     env['PYTHONUNBUFFERED'] = '1'
     return env
+
+
+@lru_cache(maxsize=128)
+def clip_poster(file: Path, version: tuple[int, int, int], timestamp: float) -> bytes:
+    result = subprocess.run(
+        ['ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error', '-ss', str(timestamp),
+         '-i', str(file), '-map', '0:v:0', '-frames:v', '1', '-vf', 'scale=360:-2',
+         '-c:v', 'mjpeg', '-f', 'image2pipe', 'pipe:1'],
+        env=pipeline_environment(), capture_output=True, timeout=20)
+    if result.returncode or not result.stdout.startswith(b'\xff\xd8'):
+        raise ValueError('A thumbnail frame could not be decoded.')
+    return result.stdout
 
 
 class Workspace:
@@ -68,6 +84,7 @@ class Workspace:
         if manifest.resolve().parent != directory:
             raise FileNotFoundError('Run not found.')
         data = json.loads(manifest.read_text(encoding='utf-8'))
+        game = data.get('config', {}).get('game', 'fortnite')
         clips = []
         for clip in data.get('shorts', []):
             name = clip.get('path', '')
@@ -80,17 +97,38 @@ class Workspace:
             start, end = float(clip['start_seconds']), float(clip['end_seconds'])
             if not math.isfinite(start) or not math.isfinite(end) or not 0 <= start < end:
                 continue
+            headline = clip.get('headline', str(clip.get('title', '')).removesuffix(' #Fortnite #Shorts').removesuffix(' #GTA6 #Shorts'))
+            caption = clip.get('reel_caption') or reel_caption(
+                game, clip.get('transcript') or '', headline or 'Gameplay highlight')
             clips.append({'name': name, 'start': start, 'end': end,
                           'title': str(clip.get('title', 'Draft clip')),
-                          'description': str(clip.get('description', '')),
-                          'headline': clip.get('headline', str(clip.get('title', '')).removesuffix(' #Fortnite #Shorts').removesuffix(' #GTA6 #Shorts')),
+                          'description': youtube_description(str(clip.get('description') or ''), caption),
+                          'headline': headline,
+                          'reel_caption': caption,
                           'captions': bool(clip.get('captions')),
+                          'poster': f'/poster/{identity}/{name}',
                           'url': f'/media/{identity}/{name}'})
         source = data.get('source', {})
+        source_url = source.get('url') or data.get('source_url')
+        source_id = source.get('video_id')
+        if not source_id and source_url:
+            try:
+                source_id = youtube_video_id(source_url)
+            except ValueError:
+                pass
+        stat = directory.stat()
+        source_path = Path(source.get('path') or identity)
+        replay = replay_filename(replay_source_path(source_path, self.output / '_youtube_downloads')) if source_id else None
+        waiting = data.get('status') == 'awaiting_story_review'
         return {'id': identity, 'revision': str(manifest.stat().st_mtime_ns),
-                'source_id': source.get('video_id') or identity,
-                'source_url': source.get('url'), 'status': data.get('status', 'unknown'),
-                'game': data.get('config', {}).get('game', 'fortnite'),
+                'source_id': source_id or identity,
+                'source_label': source.get('title') or (replay['title'] if replay else None) or source_id or source_path.name,
+                'batch_date': getattr(stat, 'st_birthtime', stat.st_mtime),
+                'source_url': source_url, 'status': data.get('status', 'unknown'),
+                'game': game,
+                'story_mode': 'story_brief' in data.get('config', {}),
+                'stories': data.get('candidates', []) if waiting else [],
+                'duration': data.get('duration_seconds') if waiting else None,
                 'combat_only': bool(data.get('config', {}).get('combat_only')),
                 'clips': clips, 'warnings': data.get('warnings', []), 'error': data.get('error')}
 
@@ -109,14 +147,14 @@ class Workspace:
             return []
         items = []
         for path in cache.iterdir():
-            if (path.is_symlink() or not path.is_file() or path.suffix.lower() not in VIDEO_SUFFIXES
-                    or not re.fullmatch(r'[A-Za-z0-9_-]{11}', path.stem)):
+            replay = replay_filename(path)
+            if not replay or path.is_symlink() or not path.is_file():
                 continue
             try:
                 info = path.stat()
             except FileNotFoundError:
                 continue
-            items.append({'name': path.name, 'source_id': path.stem, 'bytes': info.st_size,
+            items.append({'name': path.name, 'source_id': replay['id'], 'title': replay['title'], 'bytes': info.st_size,
                           'modified': info.st_mtime})
         return sorted(items, key=lambda item: (item['modified'], item['name']))
 
@@ -173,6 +211,8 @@ class Workspace:
                 return self.publisher.review_batch(run['id'], clips, self.run_directory(run['id']), data)
             elif action == 'retry-review':
                 return self.publisher.review_retry(data.get('id'))
+            elif action == 'retry-reels':
+                return self.publisher.review_failed_reels()
             elif action == 'commit':
                 ids, run = self.publisher.commit(data.get('review_id'))
                 command = [sys.executable, '-u', str(ROOT / 'publishing.py'), '--state',
@@ -184,7 +224,8 @@ class Workspace:
                 raise ValueError('Unknown publishing action.')
             return {'status': 'saved'}
 
-    def start(self, url: str, maximum: int, game: str = 'fortnite', new_moments: bool = False, mode: str = 'replay') -> None:
+    def start(self, url: str, maximum: int, game: str = 'fortnite', new_moments: bool = False,
+              mode: str = 'replay', story_brief: str = '') -> None:
         if not isinstance(url, str) or len(url) > 2048:
             raise ValueError('Paste a completed YouTube replay URL.')
         if mode not in ('replay', 'live'):
@@ -194,6 +235,8 @@ class Workspace:
             raise ValueError('Choose a clip limit between 1 and 100.')
         if game not in ('fortnite', 'gta6'):
             raise ValueError('Choose Fortnite or GTA 6.')
+        if not isinstance(story_brief, str) or len(story_brief) > 500 or '\x00' in story_brief:
+            raise ValueError('Keep the stream brief within 500 plain-text characters.')
         missing = self.missing + (self.combat_missing if game == 'fortnite' else [])
         if missing:
             raise ValueError('Setup needed: missing ' + ', '.join(missing) + '. See README setup instructions.')
@@ -207,7 +250,20 @@ class Workspace:
             command.append('--new-moments')
         if game == 'fortnite':
             command.append('--combat-only')
+        else:
+            command.append('--story-brief=' + story_brief.strip())
         self.launch(command, url=canonical, maximum=maximum, kind=mode, game=game)
+
+    def start_story_render(self, identity: str, revision: str, cuts: list) -> None:
+        run = self.read_run(identity)
+        if run['status'] != 'awaiting_story_review' or revision != run['revision']:
+            raise ValueError('The story review changed. Refresh and review this batch again.')
+        manifest = self.run_directory(identity) / 'manifest.json'
+        report = json.loads(manifest.read_text(encoding='utf-8'))
+        reviewed_stories(run['stories'], cuts, run['duration'], report['config'].get('excluded_windows', []))
+        command = [sys.executable, '-u', str(ROOT / 'clipper.py'), '--output', str(self.output),
+                   '--story-render', str(manifest), '--story-cuts', json.dumps(cuts, allow_nan=False)]
+        self.launch(command, url=run['source_url'], maximum=len(cuts), kind='story-render', game='gta6')
 
     def cancel_live(self) -> None:
         with self.lock:
@@ -361,22 +417,36 @@ class Handler(BaseHTTPRequestHandler):
                 self.response_headers(200, kind, len(body))
                 if self.command != 'HEAD':
                     self.wfile.write(body)
-            elif path.startswith('/media/'):
+            elif path.startswith(('/media/', '/poster/')):
                 parts = path.split('/')
                 if len(parts) != 4:
                     raise FileNotFoundError('Clip not found.')
                 run = self.workspace.read_run(parts[2])
-                if not any(c['name'] == parts[3] for c in run['clips']):
+                clip = next((c for c in run['clips'] if c['name'] == parts[3]), None)
+                if clip is None:
                     raise FileNotFoundError('Clip not found.')
-                file = self.workspace.run_directory(parts[2]) / parts[3]
-                self.media(file, parse_qs(target.query).get('download') == ['1'])
+                directory = self.workspace.run_directory(parts[2])
+                file = (directory / parts[3]).resolve()
+                if file.parent != directory:
+                    raise FileNotFoundError('Clip not found.')
+                if parts[1] == 'poster':
+                    stat = file.stat()
+                    version = (stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size)
+                    timestamp = round(min(3, (clip['end'] - clip['start']) * .15), 3)
+                    with POSTER_WORKERS:
+                        body = clip_poster(file, version, timestamp)
+                    self.response_headers(200, 'image/jpeg', len(body))
+                    if self.command != 'HEAD':
+                        self.wfile.write(body)
+                else:
+                    self.media(file, parse_qs(target.query).get('download') == ['1'])
             elif path.startswith('/publish-media/'):
                 self.media(self.workspace.publisher.asset_for(path.removeprefix('/publish-media/')), False)
             elif path == '/favicon.ico':
                 self.response_headers(204, 'image/x-icon', 0)
             else:
                 raise FileNotFoundError('Page not found.')
-        except (FileNotFoundError, ValueError, KeyError, TypeError):
+        except (FileNotFoundError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired):
             self.json_response({'error': 'File not found.'}, 404)
         except (BrokenPipeError, ConnectionResetError):
             pass
@@ -428,7 +498,12 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(data, dict):
                 raise ValueError('Expected an object.')
             if self.path == '/api/start':
-                self.workspace.start(data.get('url'), data.get('max_clips'), data.get('game', 'fortnite'), data.get('new_moments', False), data.get('mode', 'replay'))
+                self.workspace.start(data.get('url'), data.get('max_clips'), data.get('game', 'fortnite'),
+                                     data.get('new_moments', False), data.get('mode', 'replay'),
+                                     data.get('story_brief', ''))
+                self.json_response({'status': 'running'}, 202)
+            elif self.path == '/api/story-render':
+                self.workspace.start_story_render(data.get('run', ''), data.get('revision'), data.get('cuts'))
                 self.json_response({'status': 'running'}, 202)
             elif self.path == '/api/live/stop':
                 self.workspace.cancel_live()
