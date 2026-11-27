@@ -1,12 +1,78 @@
 # Gaming Clipper
 
-Generate **review-required vertical Shorts** from a completed YouTube livestream replay, or a local OBS recording. Use the local dashboard or the CLI after setup. The dashboard defaults to up to 25 clips; the CLI defaults to 3. Processing runs locally except replay/model downloads. The optional publishing panel uploads only a selected, reviewed clip after **Upload now**.
+Generate vertical clips from completed YouTube replays or local OBS recordings. Clipper runs on your computer and produces captioned MP4 drafts for review. The browser dashboard supports Fortnite and GTA 6, and the command line also accepts local video files. Basic clipping needs no API keys or publishing accounts.
 
-This is an explainable candidate finder, not a kill detector or a guarantee of entertaining clips. Mixed gameplay audio can trigger false positives. It returns zero drafts when the signals are insufficient.
+Use footage you own or have permission to process and publish. The clip limit is a maximum. Depending on the footage and settings, fewer moments may qualify.
+
+## Quick start
+
+Download the source from GitHub or clone it with Git. Run the setup commands from the project folder.
+
+```sh
+git clone https://github.com/neoNEMES1S/clipperv1.git
+cd clipperv1
+```
+
+### Requirements
+
+- [Python 3.11](https://www.python.org/downloads/) is the version used by the Windows test workflow.
+- [FFmpeg and FFprobe](https://ffmpeg.org/download.html) must be on `PATH`. Use a build with the `subtitles` filter (`libass`) and the `libx264` encoder.
+- For YouTube replays, install [Deno 2.3+ or Node.js 22+](https://github.com/yt-dlp/yt-dlp/wiki/EJS) and add it to `PATH`. The Python requirements install `yt-dlp` and its EJS scripts.
+- For GTA 6 story analysis and generated headlines, set up [Ollama](#local-ai-setup). Fortnite combat detection and basic local CLI clipping can run without it.
+
+### Windows
+
+Install 64-bit Python 3.11, the [Microsoft Visual C++ x64 Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist), and the tools above. Open a new PowerShell window after changing `PATH`.
+
+```powershell
+py -3.11 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements-combat.txt
+ffmpeg -hide_banner -filters | Select-String subtitles
+ffprobe -version
+deno --version # Use node --version if you installed Node.js.
+.\.venv\Scripts\python.exe app.py
+```
+
+After setup, you can also double-click **Start Clipper.bat**.
+
+### macOS
+
+With [Homebrew](https://brew.sh/), install the full FFmpeg build for subtitle rendering. Add its `bin` directory to `PATH` before starting Clipper in Terminal.
+
+```sh
+brew install python@3.11 ffmpeg-full deno
+export PATH="$(brew --prefix ffmpeg-full)/bin:$PATH"
+python3.11 -m venv .venv
+.venv/bin/python -m pip install -r requirements-combat.txt
+.venv/bin/python app.py
+```
+
+For later launches, keep that `PATH` setting in your shell configuration or use the same Terminal setup. **Start Clipper.command** can also launch the dashboard when FFmpeg and FFprobe are available to it, including through `.local/bin/`.
+
+### Linux
+
+Use your system package manager to install Python 3.11 with `venv` support and the tools listed above. Check that `ffmpeg -hide_banner -filters` lists `subtitles` before running Clipper.
+
+```sh
+python3.11 -m venv .venv
+.venv/bin/python -m pip install -r requirements-combat.txt
+.venv/bin/python app.py
+```
+
+### Local AI setup
+
+Install and start [Ollama](https://docs.ollama.com/quickstart). If you installed only the CLI and there is no running service, start `ollama serve` in a separate terminal. Then download the model Clipper uses for story analysis and titles.
+
+```sh
+ollama pull qwen3-vl:2b-instruct
+ollama list
+```
+
+Clipper calls Ollama on `127.0.0.1:11434`. Leave it running during GTA 6 processing. Whisper downloads its model the first time it transcribes audio and reuses it on later runs.
 
 ## Local dashboard
 
-After the one-time Python/FFmpeg setup below, double-click **Start Clipper.command** on Mac or **Start Clipper.bat** on Windows. On this Mac, the existing environment, small model, and local FFmpeg tools are already prepared. The launcher opens **http://127.0.0.1:8765** in your browser.
+Once Clipper starts, open [the local dashboard](http://127.0.0.1:8765). The dashboard defaults to a limit of 25 clips and the CLI defaults to three.
 
 1. Choose **Fortnite** or **GTA 6**, then paste a completed YouTube replay URL. For GTA 6, optionally enter a **Stream brief**, such as “How to make money in GTA 6.”
 2. Choose a clip limit (1–100, default 25). In GTA 6 mode, click **Find story cuts**. Select the proposed stories you want, adjust the source times if needed, then click **Render selected stories**. Fortnite still renders confirmed eliminations directly.
@@ -22,7 +88,7 @@ Keep the launcher/terminal window open while processing. Closing the browser tab
 
 Saved replays are remembered on disk in `shorts/_youtube_downloads/` by YouTube video ID. After restarting Clipper, paste the same stream URL and click **Generate clips**: a valid saved replay is reused before any YouTube request, then analysis and clip generation continue. Watch, live-replay and shortened URLs for the same video share that file, across both games. Progress reports when the download is skipped. Keep this folder to retain your streams; missing or invalid media is downloaded again. An identical run reuses validated completed clips and preserves edited headlines.
 
-GTA 6 story analysis uses the local Ollama model to find setup, key steps, and a result in the transcript. It checks sampled gameplay frames near each suggested boundary. Review stories with an unconfirmed ending before rendering. Without a brief, audio peaks are available as an explicitly labeled fallback if no transcript stories are found. GTA 6 mode requires no Fortnite OCR dependencies.
+GTA 6 story analysis uses the local Ollama model to find setup, key steps, and a result in the transcript. It checks sampled gameplay frames near suggested boundaries. An editorial brief limits which cuts qualify. Review stories with an unconfirmed ending before rendering. If no stories are found and the brief is empty, Clipper can propose cuts around audio peaks. GTA 6 mode requires no Fortnite OCR dependencies.
 
 For GTA 6 from the Mac/Linux CLI:
 
@@ -32,21 +98,15 @@ For GTA 6 from the Mac/Linux CLI:
 
 Review and render the proposed batch from the dashboard. On Windows use `.\.venv\Scripts\python.exe`. The CLI still defaults to Fortnite. For the previous audio-led GTA 6 mode, omit `--story-brief`. `--combat-only` and `--ocr` are Fortnite-only options.
 
-The interface uses the Python standard library and local HTML/CSS/JS, with no Node build, frontend packages, remote fonts or CDNs. It binds only to loopback and serves completed clips from the output manifests. History survives restarts; live progress is held in memory, while detailed pipeline logs remain in the output folders. It is a local desktop utility, not a remotely hosted service.
+Clipper binds to `127.0.0.1` and serves completed clips from the output manifests. Detailed pipeline logs are saved with the batch. For headless use, run `app.py --no-browser` with the virtual environment’s Python. For private remote use, forward the loopback port through SSH and open the forwarded address on your own device. The setup above runs Clipper as a local process. Running it at boot requires configuring your operating system’s task scheduler or service manager.
 
-If double-click launching is unavailable, run `.venv/bin/python app.py` on Mac/Linux or `.\\.venv\\Scripts\\python.exe app.py` on Windows. If port 8765 is already occupied, close the previous launcher or run `app.py --port 8766`. `--no-browser` starts just the server. FFmpeg/FFprobe can be on PATH or placed in the ignored `.local/bin/` folder (use `.exe` on Windows). Mac Homebrew executable paths are also checked.
+If port 8765 is occupied, close the previous launcher or start Clipper with `app.py --port 8766`. FFmpeg and FFprobe can also be placed in the ignored `.local/bin/` folder. Use `.exe` on Windows.
 
 ## Automatic clip titles
 
 The dashboard drafts each new clip's title from four sampled gameplay frames and its Whisper transcript, using **Qwen3-VL 2B through local Ollama**. The headline is burned into the clip and also used for its posting title. Review it in **Top headline**, edit if needed, and choose **Save & re-render** before posting. The model can misinterpret gameplay; a suggested title is not a verified event description.
 
-On this Mac, the vision model is installed. Keep Ollama running. For setup on another machine, install [Ollama](https://ollama.com), then run:
-
-```sh
-ollama pull qwen3-vl:2b-instruct
-```
-
-Clip frames and transcript go only to `127.0.0.1:11434`, with proxy settings bypassed. There is no cloud title API. The model download is about 1.9 GB; title generation adds processing time. If Ollama is unavailable or cannot identify a clear action, generation keeps the generic headline and records a warning instead of failing the clip.
+Clipper sends title-generation frames and transcripts to local Ollama. The vision model is about 1.9 GB. If Ollama is unavailable or cannot identify a clear action, Clipper keeps the generic headline and records a warning. See [Local AI setup](#local-ai-setup).
 
 For CLI runs, add `--auto-title` to enable this step. It is off by default in the CLI. Dry runs never call the vision model. Automatic-title runs have separate identities from older generic-title runs, preserving the older clips. Repeating the same automatic-title run reuses completed clips and preserves any manually edited headline.
 
@@ -60,10 +120,12 @@ Install the optional publishing dependencies once, then restart Clipper:
 
 On Windows use `.\.venv\Scripts\python.exe -m pip install -r requirements-publish.txt`. These dependencies include the combat pipeline. The browser interface still needs no frontend packages or build step.
 
-Open the **YouTube**, **Instagram**, and **Temporary storage** cards under **Publish your clips**. Enter credentials in this local page, never in chat or the remote design preview.
+This checkout verifies publishing destinations against `YOUTUBE_HANDLE` and `INSTAGRAM_HANDLE` in [`publish_accounts.py`](publish_accounts.py). To publish to your own accounts, set those constants to your handles without `@` before starting Clipper. You can also update the display labels in [`web/index.html`](web/index.html). The clipping and MP4 download workflow works without publishing setup.
 
-- **YouTube:** enable YouTube Data API v3 in your Google Cloud project; use a **Desktop app** OAuth client JSON. Add your Google account as a test user if the consent screen is in testing. Import the JSON and choose **Connect YouTube**. The system browser uses a loopback callback with PKCE and requests upload/channel-read permissions. Sign in to **@viceframe-q5r**; Clipper checks the selected channel ID against that handle and rejects another channel. See [Google’s desktop OAuth setup](https://developers.google.com/identity/protocols/oauth2/native-app).
-- **Instagram:** new Meta apps use **Unified Login** and require a business portfolio owning the app and the professional **@viceframe__** account. Create a compatible configuration with `instagram_basic` and `instagram_content_publish` (Meta may also require `instagram_manage_messages` for compatibility), invite/accept the account as an Instagram Tester, then generate a test token. Select **Unified Login** in Clipper, paste the token into the password field and leave app secret empty. Clipper discovers the shared account using `/me/assigned_instagram_accounts`, verifies the handle, and uses `graph.facebook.com/v27.0` for publishing. Reconnect when Meta expires or revokes the token. This local version uses token entry rather than hosted Meta OAuth. See [Meta’s Unified Login setup](https://developers.facebook.com/documentation/instagram-platform/instagram-api-with-unified-login/get-started).
+Open the **YouTube**, **Instagram**, and **Temporary storage** cards under **Publish your clips**. Enter credentials in the local dashboard. Clipper reads publishing credentials from the OS credential store.
+
+- **YouTube.** Enable YouTube Data API v3 in your Google Cloud project and create a **Desktop app** OAuth client. If the consent screen is in testing, add your Google account as a test user. Import the client JSON, choose **Connect YouTube**, and sign in to the channel you configured. Clipper requests upload and channel-read permissions and verifies the channel ID. [Google desktop OAuth setup](https://developers.google.com/identity/protocols/oauth2/native-app)
+- **Instagram.** Connect a professional account using the login method configured for your Meta app. For **Unified Login**, use a token with `instagram_basic` and `instagram_content_publish`, and leave the app secret field empty. Clipper verifies that the shared account matches your configured handle. Reconnect when Meta expires or revokes the token. [Meta Unified Login setup](https://developers.facebook.com/documentation/instagram-platform/instagram-api-with-unified-login/get-started)
 - **Older Instagram Login apps:** select **Instagram Login**, with `instagram_business_basic` and `instagram_business_content_publish`. The optional app secret exchanges a short-lived token for a long-lived token and is not retained. Known long-lived tokens refresh near expiry; tokens entered without an exchange have unknown expiry and may need manual reconnection. Existing saved connections continue using this method.
 - **Temporary storage:** enter your HTTPS S3-compatible endpoint without a bucket path, bucket, region (`auto` for R2), and access/secret keys. Use a private bucket and credentials with PutObject, GetObject and DeleteObject access to Clipper’s `clipper/` prefix. Temporary AWS session credentials are not supported. “Configured” means saved; connectivity is checked during upload. Clipper does not change bucket ACLs or policies. [Instagram Login publishing](https://developers.facebook.com/docs/instagram-platform/content-publishing/) requires Meta to fetch an HTTPS media URL; Clipper stages only the selected clip and creates a one-hour signed fetch URL.
 
@@ -75,33 +137,7 @@ Upload history records each platform separately and provides post links and **Re
 
 After publication Clipper deletes its own staged Instagram object. If deletion fails, history keeps the successful publication and offers **Retry cleanup**, which does not publish again. Interrupted/failed uploads can leave a staged object until resumed; use a bucket lifecycle rule if you also want provider-side expiry. The signed URL expiring does **not** delete the object. Existing unrelated bucket objects are never deleted.
 
-Public connection metadata and upload receipts are stored in ignored `.local/publishing.sqlite3`. Frozen reviewed clips and Instagram upload copies remain in `.local/publish_media/` for retries; budget disk space for those copies. There is no automatic local cleanup yet. Keep this state if you want duplicate protection/history. No uploads start automatically after rendering, connection, or app restart. The full source replay is never sent by the publishing flow.
-
-## Windows quick start
-
-Install Python 3.11+, FFmpeg (including FFprobe and the `subtitles`/libass filter), and Deno 2.3+ (or Node.js 22+) on PATH. Current YouTube extraction needs a JavaScript runtime and the EJS scripts installed by `yt-dlp[default]`; see the [official yt-dlp setup guide](https://github.com/yt-dlp/yt-dlp/wiki/EJS). Deno installation instructions are at [deno.com](https://docs.deno.com/runtime/getting_started/installation/). For example, install an FFmpeg distribution from [FFmpeg downloads](https://ffmpeg.org/download.html). On Windows, faster-whisper also requires the [Microsoft Visual C++ x64 runtime](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist/), as documented by [CTranslate2](https://opennmt.net/CTranslate2/installation). Use 64-bit Python. Open PowerShell in this folder and perform the one-time setup:
-
-```powershell
-py -3.11 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install --upgrade pip
-.\.venv\Scripts\python.exe -m pip install -r requirements-combat.txt
-ffmpeg -version
-ffprobe -version
-deno --version # Or: node --version (22+)
-ffmpeg -filters | Select-String subtitles
-```
-
-After ending your stream, wait until its replay plays normally on YouTube. Run:
-
-```powershell
-.\.venv\Scripts\python.exe clipper.py --input "https://www.youtube.com/watch?v=YOUR_VIDEO_ID" --output ".\shorts" --max-shorts 3 --model small --combat-only
-```
-
-Replace `YOUR_VIDEO_ID` with the real 11-character ID. `https://youtube.com/live/VIDEO_ID` and `https://youtu.be/VIDEO_ID` also work. Use footage you own or are authorized to process. No separate OBS recording or isolated microphone track is required for URL mode.
-
-With `--combat-only`, the program checks metadata, downloads/reuses a validated source, scans the personal HUD counter, confirms local elimination/knockdown notices, selects candidates, transcribes selected clips, and renders drafts. Conversation alone cannot anchor a combat clip. Without this flag, selection retains the original audio-energy heuristic. Progress is printed as `validate → download → analyze → select → transcribe → render → done`. A first Whisper run downloads model weights; later runs use the local model cache. CPU rendering can take longer than the clip duration.
-
-These commands use the virtual environment's Python directly, so PowerShell activation is unnecessary. On macOS/Linux, create the environment with `python3 -m venv .venv` and use `.venv/bin/python` instead.
+Public connection metadata and upload receipts are stored in ignored `.local/publishing.sqlite3`. Frozen clips and Instagram upload copies remain in `.local/publish_media/` for retries. Keep this state to retain duplicate protection and history, and budget disk space for the copies. Publishing starts when you confirm a reviewed upload. Clipper sends the selected rendered clips.
 
 ## Combat-first selection
 
@@ -110,6 +146,8 @@ Use `--combat-only` for kill/fight highlights. Install `requirements-combat.txt`
 ```powershell
 .\.venv\Scripts\python.exe clipper.py --input "https://youtu.be/YOUR_VIDEO_ID" --output ".\shorts" --combat-only --model small --max-shorts 3 --pre-roll 28 --post-roll 8
 ```
+
+Replace `YOUR_VIDEO_ID` with a completed replay’s 11-character ID. For the CLI examples below, macOS and Linux users can substitute `.venv/bin/python` and use `shorts` as the output path.
 
 This mode reads the skull/personal-eliminations counter every two seconds. It requires two agreeing reads, ignores initial counts, resets, implausible jumps and long HUD gaps, and then looks for an elimination/knockdown notification in the center HUD near that increase. The left-side kill feed is excluded. Multi-kill groups outrank louder conversation; audio is only secondary evidence. It returns zero clips if no events meet those conditions, and fails clearly if the required OCR cannot run instead of falling back to conversation.
 
@@ -240,9 +278,9 @@ The optional directory watcher retains its CLI:
 
 It waits for stable file size/modification time, not an OBS stop event. Long recording pauses may trigger it early. Existing recordings may be processed once. Failures are persisted in `.processed_recordings.json` to avoid retry storms; stop the watcher and remove the corresponding failed entry to retry. Restarting alone does not clear a failed entry.
 
-## Testing and release gate
+## Testing
 
-The dashboard, pipeline and publishing protocol checks have passed 163 tests and 22 subtests locally and on Windows CI, with no skips. See the [implementation and validation evidence](IMPLEMENTATION_REPORT.md) for Windows run links, output locations and limits. Desktop Safari and responsive layouts were manually checked on this Mac; Windows desktop browser/launcher interaction remains unverified. Provider protocol tests use fake credentials and HTTP responses; live publication requires connecting your accounts.
+The [Windows CI workflow](.github/workflows/windows-tests.yml) covers the dashboard API, synthetic FFmpeg rendering, Whisper integration, and publishing protocols with mock provider responses. See [the validation report](IMPLEMENTATION_REPORT.md) for previous test runs. For an installation smoke test, process a completed replay you own and review the generated drafts for audio, caption timing, and clip boundaries.
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
@@ -263,9 +301,3 @@ $env:CLIPPER_SPEECH_SAMPLE = (Resolve-Path "models/jfk.flac").Path
 ```
 
 These integration checks require successful speech recognition with valid timestamps and an empty result for actual silence. `--model` also accepts a local CTranslate2 model directory for offline processing.
-
-The `.github/workflows/windows-tests.yml` installs Python 3.11, Node 24, FFmpeg, runtime dependencies and the public test model/sample on a Windows runner, then runs the full suite. It does not download user recordings or publish videos. A successful run is still required to validate Windows execution; merely adding the workflow is not evidence of a pass.
-
-Before calling this ready for real streams, process a **user-owned, completed Fortnite replay** and manually review the generated drafts for HUD visibility, caption timing/Hindi font rendering, audible mixed audio and useful selection. Check actual files/times against the manifest, run the command again to confirm cache/clip reuse, and try an invalid/live link to verify the error. Automated synthetic tests do not establish real YouTube download compatibility, transcription accuracy, or highlight quality. Windows installation and real replay review must be checked on the target machine.
-
-Gameplay model training, real-time capture, cloud deployment, automatic/scheduled posting and game-specific detection beyond the Fortnite HUD are outside this release.
